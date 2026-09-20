@@ -1,0 +1,30 @@
+#+title: Ігнорування
+
+* Файл
+
+#+begin_src conf :noweb yes :mkdirp yes :tangle .gitignore
+  <<Визначення>>
+#+end_src
+
+* Збірка
+
+#+begin_src conf :noweb-ref Визначення
+  /target
+#+end_src
+
+* Резервні копії редакторів
+
+Узагальнений патерн, що охоплює й ~*.~undo-tree~~.
+
+#+begin_src conf :noweb-ref Визначення
+  *~
+#+end_src
+
+* Секрети
+
+Реальні значення лишаються в ~.env~, у сховище потрапляє лише ~.env.example~ (його породжує [[file:env.org][~env.org~]]).
+
+#+begin_src conf :noweb-ref Визначення
+  .env*
+  !.env.example
+#+end_src

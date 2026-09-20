@@ -1,0 +1,159 @@
+#+title: Головний файл
+
+Точка входу застосунку. Це довготривалий процес: клієнт =mcp= (тут — =Claude Code=) запускає цей бінарник
+підпроцесом і спілкується з ним через ~stdin~ / ~stdout~ протягом усієї сесії. Механіку протоколу
+розписано нижче; сервер побудовано за зразком ~fm-mcp~ (а той — за ~org-tmetric-mcp~).
+
+* Протокол: =json-rpc= над =stdio=
+
+=mcp= (=Model Context Protocol=) — це =json-rpc= 2.0 поверх одного з кількох транспортів; наш — ~stdio~
+(локальний процес, а не мережевий сервіс). Кожне повідомлення — окремий рядок тексту без символів нового
+рядка всередині. Повідомлення бувають двох видів: запит (~request~, має поле ~id~ й очікує відповідь з
+тим самим ~id~) і повідомлення (~notification~, без ~id~, відповіді не буде). Із методів, які треба
+обробляти, ~initialize~, ~tools/list~ і ~tools/call~ — запити, а ~notifications/initialized~ —
+повідомлення, на яке ми нічого не відповідаємо.
+
+* Підмодулі
+
+~client~ — спільні звернення до =Azure Resource Manager=, див. [[file:main-client.org][~main-client.org~]]. ~tools~ — реєстр і
+диспетчеризація інструментів, див. [[file:main-tools.org][~main-tools.org~]].
+
+#+begin_src rust :noweb-ref Декларації
+  mod client;
+  mod tools;
+#+end_src
+
+* Модуль
+
+Цикл читає ~stdin~ порядково, поки клієнт не закриє канал (тоді ~next_line~ поверне ~None~ і процес
+завершиться) — окремого повідомлення про завершення в =mcp= не передбачено.
+
+#+begin_src rust :noweb-ref Декларації
+  use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#+end_src
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/main.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  #[tokio::main]
+  async fn main() {
+      dotenvy::dotenv().ok();
+      let http = reqwest::Client::new();
+
+      let mut lines = BufReader::new(tokio::io::stdin()).lines();
+      let mut stdout = tokio::io::stdout();
+
+      while let Some(line) = lines.next_line().await.unwrap() {
+          <<Обробка-рядка>>
+      }
+  }
+#+end_src
+
+* Обробка одного рядка
+
+Порожні рядки пропускаємо. Якщо рядок не розбирається як =json=, за специфікацією відповідаємо помилкою
+розбору з ~id: null~ (справжнього ~id~ ми ще не знаємо) і переходимо до наступного рядка. Якщо розібрався
+— дістаємо ~id~ (він визначає, запит це чи повідомлення), ~method~ і ~params~.
+
+#+begin_src rust :noweb yes :noweb-ref Обробка-рядка
+  if line.trim().is_empty() {
+      continue;
+  }
+
+  let request: serde_json::Value = match serde_json::from_str(&line) {
+      Ok(value) => value,
+      Err(error) => {
+          let response = serde_json::json!({
+              "jsonrpc": "2.0",
+              "id": serde_json::Value::Null,
+              "error": { "code": -32700, "message": format!("Не вдалося розібрати JSON: {}", error) },
+          });
+          write_response(&mut stdout, &response).await;
+          continue;
+      }
+  };
+
+  let id = request.get("id").cloned();
+  let method = request["method"].as_str().unwrap_or("").to_string();
+  let params = request.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+  <<Ізоляція-від-паніки>>
+#+end_src
+
+* Ізоляція від паніки на рівні одного запиту
+
+Код інструментів вільно користується ~unwrap()~ (так простіше діагностувати неочікувану форму відповіді),
+але процес живе, поки живе вся сесія: паніка під час одного запиту не повинна вбивати сервер. Тому
+диспетчеризацію кожного рядка запускаємо в окремому ~tokio::spawn~: паніка стає ~Err~ від ~JoinHandle~,
+який перетворюємо на відповідь =json-rpc= з кодом ~-32603~. Для повідомлень (без ~id~) результат не
+чекаємо.
+
+#+begin_src rust :noweb-ref Ізоляція-від-паніки
+  match id {
+      None => {
+          tokio::spawn(dispatch(http.clone(), method, params));
+      }
+      Some(id) => {
+          let outcome = tokio::spawn(dispatch(http.clone(), method, params)).await;
+
+          let response = match outcome {
+              Ok(Ok(result)) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+              Ok(Err((code, message))) =>
+                  serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+              Err(_panic) => serde_json::json!({
+                  "jsonrpc": "2.0",
+                  "id": id,
+                  "error": { "code": -32603, "message": "Внутрішня помилка сервера під час обробки запиту." },
+              }),
+          };
+
+          write_response(&mut stdout, &response).await;
+      }
+  }
+#+end_src
+
+* Диспетчеризація методу
+
+~Err~ тут означає лише помилку рівня протоколу (метод, якого ми не підтримуємо) — код ~-32601~. Помилки
+самого інструмента (наприклад, вичерпаний ліміт =Azure=) — не помилка протоколу: ~tools/call~ завжди
+повертає ~Ok~, а невдачу передає полем ~isError: true~ у результаті, тож клієнт і модель бачать причину,
+а не обрив з'єднання.
+
+#+begin_src rust :noweb-ref Визначення
+  async fn dispatch(http: reqwest::Client, method: String, params: serde_json::Value) -> Result<serde_json::Value, (i64, String)> {
+      match method.as_str() {
+          "initialize" => Ok(serde_json::json!({
+              "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2024-11-05"),
+              "capabilities": { "tools": {} },
+              "serverInfo": { "name": "azure-mcp", "version": env!("CARGO_PKG_VERSION") },
+          })),
+          "notifications/initialized" | "ping" => Ok(serde_json::json!({})),
+          "tools/list" => Ok(serde_json::json!({ "tools": tools::list() })),
+          "tools/call" => {
+              let name = params["name"].as_str().unwrap();
+              let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+              Ok(tools::call(&http, name, &arguments).await)
+          }
+          _ => Err((-32601, format!("Метод не підтримується: {}", method))),
+      }
+  }
+#+end_src
+
+~initialize~ повертає той самий ~protocolVersion~, що надіслав клієнт (чи запасне значення, якщо його
+немає), і оголошує єдину можливість — ~tools~.
+
+* Запис відповіді
+
+Коли ~stdout~ з'єднаний з каналом, він буферизується блоками, а не порядково: без явного ~flush~
+відповідь може осісти в буфері й ніколи не дійти до клієнта. Тому кожен запис супроводжуємо ~flush~.
+
+#+begin_src rust :noweb-ref Визначення
+  async fn write_response(stdout: &mut tokio::io::Stdout, response: &serde_json::Value) {
+      let text = serde_json::to_string(response).unwrap();
+      stdout.write_all(text.as_bytes()).await.unwrap();
+      stdout.write_all(b"\n").await.unwrap();
+      stdout.flush().await.unwrap();
+  }
+#+end_src

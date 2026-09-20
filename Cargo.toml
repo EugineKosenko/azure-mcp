@@ -1,0 +1,10 @@
+[package]
+name = "azure-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenvy = "*"
+serde_json = "*"
+tokio = { version = "*", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "time"] }
+reqwest = "*"

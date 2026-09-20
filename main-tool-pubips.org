@@ -1,0 +1,199 @@
+#+title: Інструмент ~pubips~
+
+Повертає публічні IP-адреси: ім'я, група, адреса, SKU, спосіб виділення (~Static~ чи ~Dynamic~), ресурс,
+до якого адресу прив'язано, і ім'я VM. Це типовий пошук «чия ця адреса» одним викликом: раніше за NIC із
+цього виводу треба було окремо питати [[file:main-tool-nics.org][~nics~]]. Непривʼязана адреса позначена прямо, бо статична адреса без
+власника все одно тарифікується — це витік витрат. Виклики — ~GET
+.../providers/Microsoft.Network/publicIPAddresses~ (~api-version=2024-07-01~) і ~GET
+.../networkInterfaces~ (~api-version=2023-11-01~) для імені VM; обидві версії перевірено через ~az
+--debug~. Опис для ~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+
+* Модуль
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/tools/pubips.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+      <<Дії>>
+  }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      <<Тести>>
+  }
+#+end_src
+
+* Прив'язка адреси
+
+~ipConfiguration.id~ — шлях до IP-конфігурації власника, наприклад
+~.../providers/Microsoft.Network/networkInterfaces/nic1/ipConfigurations/ipconfig1~. Адресу можуть
+тримати не лише NIC, а й балансувальник чи шлюз, тож показуємо перші два сегменти після
+~Microsoft.Network/~: тип і ім'я власника (~networkInterfaces/nic1~). Адресу може тримати й NAT-шлюз
+(~natGateway.id~), тоді власником вважаємо його. Адреса без обох полів — непривʼязана, виводимо ~-~.
+
+#+begin_src rust :noweb-ref Визначення
+  fn owner(id: &str) -> String {
+      match id.split_once("/providers/Microsoft.Network/") {
+          Some((_, rest)) => rest.split('/').take(2).collect::<Vec<_>>().join("/"),
+          None => "-".to_string(),
+      }
+  }
+#+end_src
+
+* Ім'я VM
+
+VM визначаємо через NIC: у ~ipConfiguration.id~ до ~/ipConfigurations/~ стоїть ідентифікатор NIC, а сам
+NIC має ~properties.virtualMachine.id~. Ідентифікатори порівнюємо без огляду на регістр: =Azure= повертає
+~resourceGroups~ і ~resourcegroups~ по-різному. Власник не NIC (балансувальник, NAT-шлюз) чи NIC без VM
+(наприклад, приватний ендпоінт) дають ~-~ — це нормальний стан, а не помилка.
+
+#+begin_src rust :noweb-ref Декларації
+  use std::collections::HashMap;
+
+  use crate::client;
+  use crate::tools;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  fn machines(nics: &[serde_json::Value]) -> HashMap<String, String> {
+      nics.iter()
+          .filter_map(|nic| {
+              let vm = nic.pointer("/properties/virtualMachine/id")?.as_str()?;
+
+              Some((tools::text(nic, "/id").to_lowercase(), tools::last(vm).to_string()))
+          })
+          .collect()
+  }
+
+  fn machine<'a>(machines: &'a HashMap<String, String>, id: &str) -> &'a str {
+      id.split_once("/ipConfigurations/")
+          .and_then(|(nic, _)| machines.get(&nic.to_lowercase()))
+          .map(|vm| vm.as_str())
+          .unwrap_or("-")
+  }
+#+end_src
+
+* Таблиця
+
+Рядок: ім'я, група, адреса, SKU з видом виділення й прив'язка. Прив'язана адреса показує власника й VM,
+непривʼязана — ~не прив'язана~. Динамічна адреса, яку ще не виділено, не має ~ipAddress~ — тоді
+~-~. Фільтр ~addr~ порівнює адреси текстом.
+
+#+begin_src rust :noweb-ref Визначення
+  fn line(ip: &serde_json::Value, machines: &HashMap<String, String>) -> String {
+      let config = tools::text(ip, "/properties/ipConfiguration/id");
+      let gate = tools::text(ip, "/properties/natGateway/id");
+      let binding = match (config, gate) {
+          ("-", "-") => "не прив'язана".to_string(),
+          ("-", gate) => owner(gate),
+          (config, _) => format!("{}  vm={}", owner(config), machine(machines, config)),
+      };
+
+      format!(
+          "{}  {}  {}  {} {}  {}",
+          tools::text(ip, "/name"),
+          tools::part(tools::text(ip, "/id"), "resourceGroups"),
+          tools::text(ip, "/properties/ipAddress"),
+          tools::text(ip, "/sku/name"),
+          tools::text(ip, "/properties/publicIPAllocationMethod"),
+          binding,
+      )
+  }
+
+  fn table(ips: &[serde_json::Value], machines: &HashMap<String, String>, addr: Option<&str>) -> String {
+      let lines: Vec<String> = tools::sorted(ips)
+          .into_iter()
+          .filter(|ip| addr.is_none_or(|addr| tools::text(ip, "/properties/ipAddress") == addr))
+          .map(|ip| line(ip, machines))
+          .collect();
+
+      if lines.is_empty() { "Публічних IP не знайдено.".to_string() } else { lines.join("\n") }
+  }
+#+end_src
+
+* Дія
+
+Два переліки в одній області: адреси й NIC. Помилка будь-якого зупиняє інструмент і повертається текстом.
+
+#+begin_src rust :noweb-ref Дії
+  let scope = match tools::scope(arguments).await {
+      Ok(scope) => scope,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let ips = match client::list(http, &format!("{}/providers/Microsoft.Network/publicIPAddresses?api-version=2024-07-01", scope)).await {
+      Ok(ips) => ips,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let nics = match client::list(http, &format!("{}/providers/Microsoft.Network/networkInterfaces?api-version=2023-11-01", scope)).await {
+      Ok(nics) => nics,
+      Err(message) => return tools::reply(Err(message)),
+  };
+
+  tools::reply(Ok(table(&ips, &machines(&nics), arguments["addr"].as_str())))
+#+end_src
+
+* Перевірки
+
+Тестова адреса: ~web-vm-ip~ у ~demo-rg~, прив'язана до NIC ~web-vm548_z1~ VM ~web-vm~ (регістр
+ідентифікатора NIC у двох переліках навмисно різний). Друга адреса — непривʼязана статична, третя
+тримається NAT-шлюзом.
+
+#+begin_src rust :noweb-ref Тести
+  fn ips() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({
+              "name": "web-vm-ip",
+              "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/publicIPAddresses/web-vm-ip",
+              "sku": { "name": "Standard" },
+              "properties": {
+                  "ipAddress": "203.0.113.10",
+                  "publicIPAllocationMethod": "Static",
+                  "ipConfiguration": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/web-vm548_z1/ipConfigurations/ipconfig1" },
+              },
+          }),
+          serde_json::json!({
+              "name": "free-ip",
+              "id": "/subscriptions/s/resourceGroups/trial/providers/Microsoft.Network/publicIPAddresses/free-ip",
+              "sku": { "name": "Basic" },
+              "properties": { "publicIPAllocationMethod": "Dynamic" },
+          }),
+          serde_json::json!({
+              "name": "nat-ip",
+              "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/publicIPAddresses/nat-ip",
+              "sku": { "name": "Standard" },
+              "properties": {
+                  "ipAddress": "203.0.113.50",
+                  "publicIPAllocationMethod": "Static",
+                  "natGateway": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/natGateways/ng1" },
+              },
+          }),
+      ]
+  }
+
+  fn nics() -> Vec<serde_json::Value> {
+      vec![serde_json::json!({
+          "id": "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.network/networkinterfaces/web-vm548_z1",
+          "properties": { "virtualMachine": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/virtualMachines/web-vm" } },
+      })]
+  }
+
+  #[test]
+  fn table_shows_owner_and_machine() {
+      assert_eq!(
+          table(&ips(), &machines(&nics()), None),
+          "nat-ip  demo-rg  203.0.113.50  Standard Static  natGateways/ng1\n\
+           web-vm-ip  demo-rg  203.0.113.10  Standard Static  networkInterfaces/web-vm548_z1  vm=web-vm\n\
+           free-ip  trial  -  Basic Dynamic  не прив'язана"
+      );
+  }
+
+  #[test]
+  fn table_filters_by_address() {
+      assert!(table(&ips(), &machines(&nics()), Some("203.0.113.10")).ends_with("vm=web-vm"));
+      assert_eq!(table(&ips(), &machines(&nics()), Some("198.51.100.1")), "Публічних IP не знайдено.");
+  }
+#+end_src
