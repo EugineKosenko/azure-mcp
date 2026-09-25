@@ -1,9 +1,11 @@
 #+title: Інструмент ~disks~
 
-Повертає керовані диски: ім'я, група, SKU, розмір у ГБ, стан і VM, до якої диск прив'язано. Виклик — ~GET
-.../providers/Microsoft.Compute/disks~ (~api-version=2023-04-02~, перевірено через ~az --debug~).
-Непривʼязаний диск позначено прямо: він залишається тарифікованим, тож це витік витрат, як і статична
-публічна IP без власника (див. [[file:main-tool-pubips.org][~pubips~]]). Опис для ~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+Повертає керовані диски: ім'я, група, SKU, розмір у ГБ, покоління (~hyperVGeneration~, ~V1~ / ~V2~), тип
+безпеки (~securityProfile/securityType~, напр. ~TrustedLaunch~), стан і VM, до якої диск прив'язано.
+Виклик — ~GET .../providers/Microsoft.Compute/disks~ (~api-version=2023-04-02~, перевірено через ~az
+--debug~). Непривʼязаний диск позначено прямо: він залишається тарифікованим, тож це витік витрат, як і
+статична публічна IP без власника (див. [[file:main-tool-pubips.org][~pubips~]]). Опис для ~tools/list~ і диспетчеризація — в
+[[file:main-tools.org][~main-tools.org~]].
 
 * Модуль
 
@@ -30,7 +32,10 @@
 непривʼязаного диска його немає, тоді ~vm=-~. ~diskState~ приймає значення ~Attached~, ~Unattached~,
 ~Reserved~ та інші; позначку додаємо лише для ~Unattached~. ~Reserved~ у живому виводі мають диски
 вимкнених (~deallocated~) VM: диск прив'язано, а машина не працює, і за нього все одно платять. Групу
-виводимо малими літерами, як у [[file:main-tool-vms.org][~vms~]]. Фільтр ~name~ не залежить від регістру.
+виводимо малими літерами, як у [[file:main-tool-vms.org][~vms~]]. Фільтр ~name~ не залежить від регістру. ~hyperVGeneration~ і
+~securityProfile/securityType~ важливі для перевикористання диска (напр. створення образу зі снепшота):
+непідтримувана комбінація — типова причина, чому ~az disk create --source~ / ~az image create~ падає; у
+диска без визначеної безпеки (старіші, не ~TrustedLaunch~) поле відсутнє — тоді ~-~.
 
 #+begin_src rust :noweb-ref Декларації
   use crate::client;
@@ -42,11 +47,13 @@
       let state = tools::text(disk, "/properties/diskState");
 
       format!(
-          "{}  {}  {}  {} ГБ  {}  vm={}{}",
+          "{}  {}  {}  {} ГБ  {}  {}  {}  vm={}{}",
           tools::text(disk, "/name"),
           tools::part(tools::text(disk, "/id"), "resourceGroups").to_lowercase(),
           tools::text(disk, "/sku/name"),
           tools::shown(disk, "/properties/diskSizeGB"),
+          tools::text(disk, "/properties/hyperVGeneration"),
+          tools::text(disk, "/properties/securityProfile/securityType"),
           state,
           tools::last(tools::text(disk, "/managedBy")),
           if state == "Unattached" { "  (не прив'язаний)" } else { "" },
@@ -88,7 +95,7 @@
               "id": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/disks/win-server_osdisk_1",
               "sku": { "name": "Premium_LRS" },
               "managedBy": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/virtualMachines/win-server",
-              "properties": { "diskSizeGB": 127, "diskState": "Attached" },
+              "properties": { "diskSizeGB": 127, "diskState": "Attached", "hyperVGeneration": "V2", "securityProfile": { "securityType": "TrustedLaunch" } },
           }),
           serde_json::json!({
               "name": "old-data",
@@ -103,8 +110,8 @@
   fn table_marks_unattached() {
       assert_eq!(
           table(&disks(), None),
-          "old-data  demo-rg  Standard_LRS  32 ГБ  Unattached  vm=-  (не прив'язаний)\n\
-           win-server_osdisk_1  trial  Premium_LRS  127 ГБ  Attached  vm=win-server"
+          "old-data  demo-rg  Standard_LRS  32 ГБ  -  -  Unattached  vm=-  (не прив'язаний)\n\
+           win-server_osdisk_1  trial  Premium_LRS  127 ГБ  V2  TrustedLaunch  Attached  vm=win-server"
       );
   }
 

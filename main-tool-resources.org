@@ -1,0 +1,110 @@
+#+title: Інструмент ~resources~
+
+Повний перелік ресурсів усіх типів у групі чи підписці: ім'я, група, тип, регіон. Виклик — ~GET
+.../resources~ (~api-version=2021-04-01~, без префікса конкретного постачальника — загальний =arm=
+=endpoint=, перевірено живим викликом 2026-09-25 на групі й на цілій підписці). Заміна ~az resource list
+-g~ — корисно для зведень («що взагалі є в групі»), коли не підходить жоден вузький інструмент. Опис для
+~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+
+* Модуль
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/tools/resources.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+      <<Дії>>
+  }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      <<Тести>>
+  }
+#+end_src
+
+* Таблиця
+
+Фільтр ~type~ — повний тип ресурсу =Azure= (напр. ~Microsoft.Compute/virtualMachines~), не залежить від
+регістру, точний збіг: часткового пошуку немає, як і в решти інструментів проєкту (~name~ у [[file:main-tool-disks.org][~disks~]]
+тощо).
+
+#+begin_src rust :noweb-ref Декларації
+  use crate::client;
+  use crate::tools;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  fn line(item: &serde_json::Value) -> String {
+      format!(
+          "{}  {}  {}  {}",
+          tools::text(item, "/name"),
+          tools::part(tools::text(item, "/id"), "resourceGroups").to_lowercase(),
+          tools::text(item, "/type"),
+          tools::text(item, "/location"),
+      )
+  }
+
+  fn table(items: &[serde_json::Value], kind: Option<&str>) -> String {
+      let lines: Vec<String> = tools::sorted(items)
+          .into_iter()
+          .filter(|item| kind.is_none_or(|kind| tools::same(tools::text(item, "/type"), kind)))
+          .map(line)
+          .collect();
+
+      if lines.is_empty() { "Ресурсів не знайдено.".to_string() } else { lines.join("\n") }
+  }
+#+end_src
+
+* Дія
+
+#+begin_src rust :noweb-ref Дії
+  let scope = match tools::scope(arguments).await {
+      Ok(scope) => scope,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let path = format!("{}/resources?api-version=2021-04-01", scope);
+
+  tools::reply(client::list(http, &path).await.map(|items| table(&items, arguments["type"].as_str())))
+#+end_src
+
+* Перевірки
+
+#+begin_src rust :noweb-ref Тести
+  fn items() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({
+              "name": "demo-vm",
+              "id": "/subscriptions/s/resourceGroups/DEMO-RG/providers/Microsoft.Compute/virtualMachines/demo-vm",
+              "type": "Microsoft.Compute/virtualMachines",
+              "location": "eastus",
+          }),
+          serde_json::json!({
+              "name": "demo-vnet",
+              "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/virtualNetworks/demo-vnet",
+              "type": "Microsoft.Network/virtualNetworks",
+              "location": "eastus",
+          }),
+      ]
+  }
+
+  #[test]
+  fn table_lists_all_types() {
+      assert_eq!(
+          table(&items(), None),
+          "demo-vm  demo-rg  Microsoft.Compute/virtualMachines  eastus\n\
+           demo-vnet  demo-rg  Microsoft.Network/virtualNetworks  eastus"
+      );
+  }
+
+  #[test]
+  fn table_filters_by_type() {
+      assert_eq!(
+          table(&items(), Some("microsoft.compute/virtualmachines")),
+          "demo-vm  demo-rg  Microsoft.Compute/virtualMachines  eastus"
+      );
+      assert_eq!(table(&items(), Some("other")), "Ресурсів не знайдено.".to_string());
+  }
+#+end_src

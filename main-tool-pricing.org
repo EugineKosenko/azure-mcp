@@ -1,0 +1,145 @@
+#+title: Інструмент ~pricing~
+
+Ціни зберігання ~Standard HDD Managed Disks~ у заданому регіоні: снепшоти (~LRS~ / ~ZRS~, за фактично
+використаний ГБ на місяць) і рівні дисків (~S4~–~S80~, за виділений розмір, округлення вгору) — з
+публічного =Azure Retail Prices= (без автентифікації, не =arm=, див. [[file:main-client.org][~main-client.org~]]). Аргумент
+~region~ обов'язковий. Опис для ~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+
+* Модуль
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/tools/pricing.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+      <<Дії>>
+  }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      <<Тести>>
+  }
+#+end_src
+
+* Рівні дисків
+
+Порядок і розмір рівнів ~Standard HDD~ (~S4~–~S80~) =api= не повертає — це усталений, стабільний перелік
+=Azure= (~Standard HDD size~, [[https://learn.microsoft.com/azure/virtual-machines/disks-types][disks-types]]).
+
+#+begin_src rust :noweb-ref Визначення
+  const TIERS: [(&str, u32); 11] = [
+      ("S4", 32), ("S6", 64), ("S10", 128), ("S15", 256), ("S20", 512),
+      ("S30", 1024), ("S40", 2048), ("S50", 4096), ("S60", 8192), ("S70", 16384), ("S80", 32767),
+  ];
+#+end_src
+
+* Таблиця
+
+~meterName~ розрізняє три групи метрик того самого продукту: снепшоти (закінчується на ~ Snapshots~),
+рівні диска (закінчується на ~LRS Disk~) і решта (операції вводу-виводу, конфіденційне шифрування) — її
+не показуємо. Ціну образу (~Microsoft.Compute/images~) =Azure= окремо не документує: він міг би
+тарифікуватися як диск за рівнем, міг би — як снепшот за використаними даними; про це прямо в тексті
+відповіді, а не мовчки обираємо одну модель.
+
+#+begin_src rust :noweb-ref Декларації
+  use crate::client;
+  use crate::tools;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  fn currency(items: &[serde_json::Value]) -> &str {
+      items.first().map(|item| tools::text(item, "/currencyCode")).unwrap_or("-")
+  }
+
+  fn snapshots(items: &[serde_json::Value]) -> String {
+      items
+          .iter()
+          .filter(|item| tools::text(item, "/meterName").ends_with(" Snapshots"))
+          .map(|item| {
+              format!(
+                  "{:>8.3}  {}",
+                  item["retailPrice"].as_f64().unwrap(),
+                  tools::text(item, "/meterName").trim_end_matches(" Snapshots"),
+              )
+          })
+          .collect::<Vec<_>>()
+          .join("\n")
+  }
+
+  fn tiers(items: &[serde_json::Value]) -> String {
+      TIERS
+          .iter()
+          .filter_map(|(tier, gib)| {
+              items
+                  .iter()
+                  .find(|item| tools::text(item, "/meterName") == format!("{} LRS Disk", tier))
+                  .map(|item| format!("{:>8.3}  {}  {} ГБ", item["retailPrice"].as_f64().unwrap(), tier, gib))
+          })
+          .collect::<Vec<_>>()
+          .join("\n")
+  }
+
+  fn table(items: &[serde_json::Value]) -> String {
+      if items.is_empty() {
+          return "Цін не знайдено (перевірте код регіону).".to_string();
+      }
+
+      let currency = currency(items);
+
+      format!(
+          "Снепшоти (за фактично використаний ГБ, {currency} на місяць):\n{}\n\n\
+           Рівні дисків (за виділений розмір, округлення вгору, {currency} на місяць):\n{}\n\n\
+           Образ (Microsoft.Compute/images) Azure окремо не документує: можливо, тарифікується як диск за \
+           рівнем (друга таблиця), можливо — як снепшот за використаними даними (перша); точну модель \
+           перевірте на першому реальному образі інструментом costs.",
+          snapshots(items), tiers(items),
+      )
+  }
+#+end_src
+
+* Дія
+
+#+begin_src rust :noweb-ref Дії
+  let Some(region) = arguments["region"].as_str() else {
+      return tools::reply(Err("Аргумент region обов'язковий (armRegionName, напр. eastus).".to_string()));
+  };
+  let filter = format!("armRegionName eq '{}' and productName eq 'Standard HDD Managed Disks'", region);
+
+  tools::reply(client::retail(http, &filter).await.map(|items| table(&items)))
+#+end_src
+
+* Перевірки
+
+Зразок — реальна відповідь =api= для ~eastus~ (перевірено живим запитом 2026-09-25), скорочена до кількох
+метрик, разом з рядком ~Operations~, який має бути відкинутий.
+
+#+begin_src rust :noweb-ref Тести
+  fn items() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.05, "meterName": "LRS Snapshots" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.05, "meterName": "ZRS Snapshots" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 1.536, "meterName": "S4 LRS Disk" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.0005, "meterName": "S4 LRS Disk Operations" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 3.008, "meterName": "S6 LRS Disk" }),
+      ]
+  }
+
+  #[test]
+  fn table_separates_snapshots_and_tiers() {
+      let text = table(&items());
+
+      assert!(text.contains("0.050  LRS"));
+      assert!(text.contains("0.050  ZRS"));
+      assert!(text.contains("1.536  S4  32 ГБ"));
+      assert!(text.contains("3.008  S6  64 ГБ"));
+      assert!(!text.contains("Operations"));
+  }
+
+  #[test]
+  fn table_empty_is_a_hint() {
+      assert_eq!(table(&[]), "Цін не знайдено (перевірте код регіону).".to_string());
+  }
+#+end_src

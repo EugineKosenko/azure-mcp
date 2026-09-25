@@ -7,6 +7,13 @@ mod firewall;
 mod dnszones;
 mod vms;
 mod disks;
+mod pricing;
+mod advisor;
+mod account;
+mod quota;
+mod snapshots;
+mod vnets;
+mod resources;
 
 pub fn list() -> serde_json::Value {
     serde_json::json!([
@@ -119,6 +126,95 @@ pub fn list() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "pricing",
+            "description": "Ціни зберігання Standard HDD Managed Disks у регіоні: снепшоти LRS/ZRS (за фактично використаний ГБ на місяць) і рівні дисків S4–S80 (за виділений розмір, округлення вгору до рівня, на місяць) — з публічного Azure Retail Prices, без автентифікації й без прив'язки до підписки. Ціну образу (Microsoft.Compute/images) Azure окремо не документує, тому відповідь показує обидві моделі й радить перевірити фактичну через costs після створення першого образу.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "region": { "type": "string", "description": "Код регіону Azure (armRegionName), напр. eastus" }
+                },
+                "required": ["region"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "advisor",
+            "description": "Рекомендації Azure Advisor підписки: категорія (Cost, HighAvailability, Security, Performance, OperationalExcellence), вплив, ресурс, річна економія (коли є) і короткий опис проблеми. Пряме звернення до Microsoft.Advisor/recommendations, без залежності від нестабільного офіційного npx-пакета. Необов'язковий category звужує до однієї категорії, group — до однієї групи ресурсів (фільтр застосовується після завантаження: сам api підтримує лише рівень підписки).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": { "type": "string", "enum": ["Cost", "HighAvailability", "Security", "Performance", "OperationalExcellence"], "description": "Лише ця категорія рекомендацій" },
+                    "group": { "type": "string", "description": "Лише ця група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "account",
+            "description": "Дані підписки: назва, ідентифікатор, стан, тенант, тип угоди (quotaId) і ліміт витрат (spendingLimit). Заміна az account show прямим ARM-запитом.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "quota",
+            "description": "Квоти регіону підписки: compute (родини VM, заміна az vm list-usage) і network (публічні IP, VNet, NSG тощо, заміна az network list-usages). Вичерпану квоту позначено прямо. Необов'язковий kind звужує до однієї з двох груп.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "region": { "type": "string", "description": "Код регіону Azure, напр. eastus" },
+                    "kind": { "type": "string", "enum": ["compute", "network"], "description": "Лише ця група квот; без нього — обидві" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "required": ["region"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "snapshots",
+            "description": "Снепшоти дисків: ім'я, група, SKU, розмір у ГБ, покоління, тип безпеки, ОС, диск-джерело, повний/інкрементний. Заміна az snapshot list. Необов'язковий name лишає один снепшот.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Лише снепшот з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "vnets",
+            "description": "Віртуальні мережі й підмережі: адресний простір мережі, ім'я/префікс і прив'язана NSG кожної підмережі (рядок на підмережу). Заміна az network vnet list разом із перевіркою NSG кожної підмережі окремо. Необов'язковий name лишає одну мережу.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Лише мережа з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "resources",
+            "description": "Повний перелік ресурсів усіх типів у групі чи підписці: ім'я, група, тип, регіон. Заміна az resource list -g, корисно для зведень, коли не підходить жоден вузький інструмент. Необов'язковий type звужує до одного повного типу ресурсу Azure (точний збіг, напр. Microsoft.Compute/virtualMachines).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "type": { "type": "string", "description": "Лише цей тип ресурсу, напр. Microsoft.Compute/virtualMachines" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -133,6 +229,13 @@ pub async fn call(http: &reqwest::Client, name: &str, arguments: &serde_json::Va
         "dnszones" => dnszones::run(http, arguments).await,
         "vms" => vms::run(http, arguments).await,
         "disks" => disks::run(http, arguments).await,
+        "pricing" => pricing::run(http, arguments).await,
+        "advisor" => advisor::run(http, arguments).await,
+        "account" => account::run(http, arguments).await,
+        "quota" => quota::run(http, arguments).await,
+        "snapshots" => snapshots::run(http, arguments).await,
+        "vnets" => vnets::run(http, arguments).await,
+        "resources" => resources::run(http, arguments).await,
         _ => reply(Err(format!("Невідомий інструмент: {}", name)))
     }
 }

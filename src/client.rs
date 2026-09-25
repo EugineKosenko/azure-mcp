@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::path::{Path, PathBuf};
 use reqwest::Method;
+use reqwest::Url;
 
 const ARM: &str = "https://management.azure.com";
 const LOGIN: &str = "Якщо це AADSTS50078 (сплив термін багатофакторної автентифікації), користувач має виконати інтерактивно: az login --scope https://management.core.windows.net//.default (за потреби з --tenant <тенант>).";
@@ -184,6 +185,37 @@ pub async fn list(http: &reqwest::Client, path: &str) -> Result<Vec<serde_json::
         items.extend(body["value"].as_array().unwrap().iter().cloned());
 
         match body["nextLink"].as_str() {
+            Some(next) => url = next.to_string(),
+            None => return Ok(items),
+        }
+    }
+}
+pub async fn get(http: &reqwest::Client, path: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}{}", ARM, path);
+
+    Ok(serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap())
+}
+const RETAIL: &str = "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview";
+
+pub async fn retail(http: &reqwest::Client, filter: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut address = Url::parse(RETAIL).unwrap();
+    address.query_pairs_mut().append_pair("$filter", filter);
+    let mut url = address.to_string();
+    let mut items = Vec::new();
+
+    loop {
+        let response = http.get(&url).send().await.map_err(|error| format!("Запит до Azure Retail Prices не вдався: {}", error))?;
+        let status = response.status();
+        let text = response.text().await.unwrap();
+
+        if !status.is_success() {
+            return Err(format!("Azure Retail Prices відповів {} для {}: {}", status, url, text));
+        }
+
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        items.extend(body["Items"].as_array().unwrap().iter().cloned());
+
+        match body["NextPageLink"].as_str() {
             Some(next) => url = next.to_string(),
             None => return Ok(items),
         }

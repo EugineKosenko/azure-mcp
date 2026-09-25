@@ -41,6 +41,25 @@ fn addresses<'a>(
 
     (joined(private), joined(public))
 }
+fn security(vm: &serde_json::Value) -> String {
+    let kind = tools::text(vm, "/properties/securityProfile/securityType");
+
+    if kind == "-" {
+        return "-".to_string();
+    }
+
+    let mut flags = Vec::new();
+
+    if vm["properties"]["securityProfile"]["uefiSettings"]["secureBootEnabled"].as_bool() == Some(true) {
+        flags.push("secureBoot");
+    }
+    if vm["properties"]["securityProfile"]["uefiSettings"]["vTpmEnabled"].as_bool() == Some(true) {
+        flags.push("vTpm");
+    }
+
+    format!("{}({})", kind, flags.join(","))
+}
+
 fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_json::Value], ips: &[serde_json::Value], name: Option<&str>) -> String {
     let (status, nics, ips) = (index(status), index(nics), index(ips));
 
@@ -51,14 +70,16 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
             let (private, public) = addresses(vm, &nics, &ips);
 
             format!(
-                "{}  {}  {}  {}  {}  private={}  public={}",
+                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}",
                 tools::text(vm, "/name"),
                 tools::part(tools::text(vm, "/id"), "resourceGroups").to_lowercase(),
+                tools::text(vm, "/location"),
                 tools::text(vm, "/properties/hardwareProfile/vmSize"),
                 tools::text(vm, "/properties/storageProfile/osDisk/osType"),
                 power(status.get(&tools::text(vm, "/id").to_lowercase())),
                 private,
                 public,
+                security(vm),
             )
         })
         .collect();
@@ -90,15 +111,18 @@ mod tests {
             serde_json::json!({
                 "name": "api-vm",
                 "id": "/subscriptions/s/resourceGroups/DEMO-RG/providers/Microsoft.Compute/virtualMachines/api-vm",
+                "location": "eastus",
                 "properties": {
                     "hardwareProfile": { "vmSize": "Standard_B1ms" },
                     "storageProfile": { "osDisk": { "osType": "Linux" } },
                     "networkProfile": { "networkInterfaces": [{ "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/nic1" }] },
+                    "securityProfile": { "securityType": "TrustedLaunch", "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true } },
                 },
             }),
             serde_json::json!({
                 "name": "win-server",
                 "id": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/virtualMachines/win-server",
+                "location": "westus3",
                 "properties": {
                     "hardwareProfile": { "vmSize": "Standard_D2s_v3" },
                     "storageProfile": { "osDisk": { "osType": "Windows" } },
@@ -144,8 +168,8 @@ mod tests {
     fn table_joins_status_and_addresses() {
         assert_eq!(
             table(&vms(), &status(), &nics(), &ips(), None),
-            "api-vm  demo-rg  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40\n\
-             win-server  trial  Standard_D2s_v3  Windows  deallocated  private=-  public=-"
+            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)\n\
+             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-"
         );
     }
     
@@ -158,6 +182,16 @@ mod tests {
     #[test]
     fn power_missing_is_dash() {
         assert_eq!(power(None), "-");
-        assert_eq!(table(&vms(), &[], &nics(), &ips(), Some("win-server")), "win-server  trial  Standard_D2s_v3  Windows  -  private=-  public=-");
+        assert_eq!(
+            table(&vms(), &[], &nics(), &ips(), Some("win-server")),
+            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-"
+        );
+    }
+    
+    #[test]
+    fn security_without_uefi_settings_has_no_flags() {
+        let vm = serde_json::json!({ "properties": { "securityProfile": { "securityType": "TrustedLaunch" } } });
+    
+        assert_eq!(security(&vm), "TrustedLaunch()");
     }
 }

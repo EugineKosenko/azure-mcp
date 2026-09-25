@@ -1,0 +1,161 @@
+#+title: Інструмент ~advisor~
+
+Рекомендації =Azure Advisor= підписки (усі категорії: ~Cost~, ~HighAvailability~, ~Security~,
+~Performance~, ~OperationalExcellence~) — звичайний =arm= ~GET~ (~Microsoft.Advisor/recommendations~,
+~api-version=2025-01-01~, перевірено живим викликом 2026-09-25), тим самим токеном ~az~, що й решта
+інструментів; не =Cost Management= і без окремого кешу. Замінює нестабільний офіційний =npx
+@azure/mcp= (падав ~CONNECT_TIMEOUT~ / ~CONNECTION_CLOSED~ в іншому проєкті) прямим зверненням. Опис для
+~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+
+* Модуль
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/tools/advisor.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+      <<Дії>>
+  }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      <<Тести>>
+  }
+#+end_src
+
+* Таблиця
+
+=Api= не підтримує звуження шляху групою ресурсів (перевірено живим викликом: ~404~) — лише підписку, тож
+~group~ фільтруємо після завантаження, за тим самим принципом, що ~name~ у [[file:main-tool-disks.org][~disks~]]. Рекомендація без
+конкретного ресурсу (напр. «купіть зарезервований інстанс») має ~resourceMetadata/resourceId~ рівнем
+підписки — без сегмента ~resourceGroups~, тоді показуємо «підписка» замість самого ідентифікатора.
+Економію показано, лише коли вона є в ~extendedProperties~ (не всі категорії й типи рекомендацій її
+несуть).
+
+#+begin_src rust :noweb-ref Декларації
+  use crate::client;
+  use crate::tools;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  fn resource(id: &str) -> String {
+      if tools::part(id, "resourceGroups") == "-" { "підписка".to_string() } else { tools::last(id).to_string() }
+  }
+
+  fn economy(item: &serde_json::Value) -> String {
+      let amount = tools::text(item, "/properties/extendedProperties/annualSavingsAmount");
+      let currency = tools::text(item, "/properties/extendedProperties/savingsCurrency");
+
+      if amount == "-" { "-".to_string() } else { format!("{} {}/рік", amount, currency) }
+  }
+
+  fn line(item: &serde_json::Value) -> String {
+      let id = tools::text(item, "/properties/resourceMetadata/resourceId");
+
+      format!(
+          "{}  {}  {}  {}  {}  {}",
+          tools::part(id, "resourceGroups"),
+          tools::text(item, "/properties/impact"),
+          tools::text(item, "/properties/category"),
+          resource(id),
+          economy(item),
+          tools::text(item, "/properties/shortDescription/problem"),
+      )
+  }
+
+  fn table(items: &[serde_json::Value], category: Option<&str>, group: Option<&str>) -> String {
+      let lines: Vec<String> = tools::sorted(items)
+          .into_iter()
+          .filter(|item| category.is_none_or(|category| tools::same(tools::text(item, "/properties/category"), category)))
+          .filter(|item| {
+              group.is_none_or(|group| {
+                  tools::same(tools::part(tools::text(item, "/properties/resourceMetadata/resourceId"), "resourceGroups"), group)
+              })
+          })
+          .map(line)
+          .collect();
+
+      if lines.is_empty() { "Рекомендацій не знайдено.".to_string() } else { lines.join("\n") }
+  }
+#+end_src
+
+* Дія
+
+#+begin_src rust :noweb-ref Дії
+  let subscription = match tools::subscription(arguments).await {
+      Ok(subscription) => subscription,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let path = format!("{}/providers/Microsoft.Advisor/recommendations?api-version=2025-01-01", subscription);
+
+  tools::reply(
+      client::list(http, &path).await.map(|items| table(&items, arguments["category"].as_str(), arguments["group"].as_str())),
+  )
+#+end_src
+
+* Перевірки
+
+Зразок — скорочена реальна відповідь =api= (2026-09-25, дані замінено на вигадані): рекомендація для
+конкретної =vm= й рекомендація на рівні підписки (без сегмента групи в ~resourceId~).
+
+#+begin_src rust :noweb-ref Тести
+  fn items() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({
+              "id": "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.compute/virtualmachines/web-vm/providers/Microsoft.Advisor/recommendations/h1",
+              "name": "h1",
+              "properties": {
+                  "category": "Cost",
+                  "impact": "High",
+                  "shortDescription": { "problem": "Right-size or shutdown underutilized virtual machines" },
+                  "resourceMetadata": { "resourceId": "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.compute/virtualmachines/web-vm" },
+                  "extendedProperties": { "annualSavingsAmount": "324", "savingsCurrency": "USD" },
+              },
+          }),
+          serde_json::json!({
+              "id": "/subscriptions/s/providers/Microsoft.Advisor/recommendations/h2",
+              "name": "h2",
+              "properties": {
+                  "category": "Cost",
+                  "impact": "High",
+                  "shortDescription": { "problem": "Consider virtual machine reserved instance" },
+                  "resourceMetadata": { "resourceId": "/subscriptions/s" },
+                  "extendedProperties": { "annualSavingsAmount": "204", "savingsCurrency": "USD" },
+              },
+          }),
+          serde_json::json!({
+              "id": "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.compute/virtualmachines/web-vm/providers/Microsoft.Advisor/recommendations/h3",
+              "name": "h3",
+              "properties": {
+                  "category": "HighAvailability",
+                  "impact": "Medium",
+                  "shortDescription": { "problem": "Enable backup" },
+                  "resourceMetadata": { "resourceId": "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.compute/virtualmachines/web-vm" },
+                  "extendedProperties": {},
+              },
+          }),
+      ]
+  }
+
+  #[test]
+  fn table_shows_resource_and_economy() {
+      let text = table(&items(), None, None);
+
+      assert!(text.contains("demo-rg  High  Cost  web-vm  324 USD/рік  Right-size"));
+      assert!(text.contains("-  High  Cost  підписка  204 USD/рік  Consider"));
+      assert!(text.contains("demo-rg  Medium  HighAvailability  web-vm  -  Enable backup"));
+  }
+
+  #[test]
+  fn table_filters_by_category_and_group() {
+      let text = table(&items(), Some("cost"), None);
+      assert!(text.contains("Right-size"));
+      assert!(text.contains("Consider"));
+      assert!(!text.contains("Enable backup"));
+
+      assert_eq!(table(&items(), None, Some("other")), "Рекомендацій не знайдено.");
+  }
+#+end_src

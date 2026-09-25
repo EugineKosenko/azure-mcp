@@ -5,11 +5,13 @@ fn line(disk: &serde_json::Value) -> String {
     let state = tools::text(disk, "/properties/diskState");
 
     format!(
-        "{}  {}  {}  {} ГБ  {}  vm={}{}",
+        "{}  {}  {}  {} ГБ  {}  {}  {}  vm={}{}",
         tools::text(disk, "/name"),
         tools::part(tools::text(disk, "/id"), "resourceGroups").to_lowercase(),
         tools::text(disk, "/sku/name"),
         tools::shown(disk, "/properties/diskSizeGB"),
+        tools::text(disk, "/properties/hyperVGeneration"),
+        tools::text(disk, "/properties/securityProfile/securityType"),
         state,
         tools::last(tools::text(disk, "/managedBy")),
         if state == "Unattached" { "  (не прив'язаний)" } else { "" },
@@ -47,7 +49,7 @@ mod tests {
                 "id": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/disks/win-server_osdisk_1",
                 "sku": { "name": "Premium_LRS" },
                 "managedBy": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/virtualMachines/win-server",
-                "properties": { "diskSizeGB": 127, "diskState": "Attached" },
+                "properties": { "diskSizeGB": 127, "diskState": "Attached", "hyperVGeneration": "V2", "securityProfile": { "securityType": "TrustedLaunch" } },
             }),
             serde_json::json!({
                 "name": "old-data",
@@ -62,8 +64,8 @@ mod tests {
     fn table_marks_unattached() {
         assert_eq!(
             table(&disks(), None),
-            "old-data  demo-rg  Standard_LRS  32 ГБ  Unattached  vm=-  (не прив'язаний)\n\
-             win-server_osdisk_1  trial  Premium_LRS  127 ГБ  Attached  vm=win-server"
+            "old-data  demo-rg  Standard_LRS  32 ГБ  -  -  Unattached  vm=-  (не прив'язаний)\n\
+             win-server_osdisk_1  trial  Premium_LRS  127 ГБ  V2  TrustedLaunch  Attached  vm=win-server"
         );
     }
     

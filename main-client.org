@@ -315,6 +315,58 @@ Management=); читання мережевих ресурсів і =MySQL= — 
   }
 #+end_src
 
+* Один ресурс
+
+На відміну від ~list~, деякі адреси (напр. сама підписка) віддають один об'єкт, без обгортки ~value~.
+
+#+begin_src rust :noweb-ref Визначення
+  pub async fn get(http: &reqwest::Client, path: &str) -> Result<serde_json::Value, String> {
+      let url = format!("{}{}", ARM, path);
+
+      Ok(serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap())
+  }
+#+end_src
+
+* Роздрібні ціни ~Azure Retail Prices~
+
+Публічний =api= без автентифікації (~prices.azure.com~): ціни зберігання за регіон. На відміну від решти
+клієнта, тут не потрібен ані токен ~az~, ані заголовок =Authorization=, ані підписка — інший хост, не
+=arm=. Структура відповіді теж інша: елементи в полі ~Items~ (не ~value~), сторінкування через
+~NextPageLink~ (не ~nextLink~), тож не можна перевикористати ~list~.
+
+#+begin_src rust :noweb-ref Декларації
+  use reqwest::Url;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  const RETAIL: &str = "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview";
+
+  pub async fn retail(http: &reqwest::Client, filter: &str) -> Result<Vec<serde_json::Value>, String> {
+      let mut address = Url::parse(RETAIL).unwrap();
+      address.query_pairs_mut().append_pair("$filter", filter);
+      let mut url = address.to_string();
+      let mut items = Vec::new();
+
+      loop {
+          let response = http.get(&url).send().await.map_err(|error| format!("Запит до Azure Retail Prices не вдався: {}", error))?;
+          let status = response.status();
+          let text = response.text().await.unwrap();
+
+          if !status.is_success() {
+              return Err(format!("Azure Retail Prices відповів {} для {}: {}", status, url, text));
+          }
+
+          let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+          items.extend(body["Items"].as_array().unwrap().iter().cloned());
+
+          match body["NextPageLink"].as_str() {
+              Some(next) => url = next.to_string(),
+              None => return Ok(items),
+          }
+      }
+  }
+#+end_src
+
 * Перевірки
 
 Відбиток не залежить від мережі. Порожній рядок має дати початкове значення =fnv-1a=, а різні тексти —
