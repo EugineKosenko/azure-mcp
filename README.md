@@ -57,8 +57,8 @@ report, not a sortable list).
   range is matched against the public IPs of the subscription (or reported as matching none). A server with
   no rules says what that means.
 - **dnszones** — private DNS zones: virtual network links and A records.
-- **vms** — virtual machines: region, size, OS, power state, private and public IPs, and boot security
-  (`securityType`, e.g. `TrustedLaunch`, with `secureBoot` / `vTpm` flags when set).
+- **vms** — virtual machines: region, size, OS, power state, private and public IPs, boot security
+  (`securityType`, e.g. `TrustedLaunch`, with `secureBoot` / `vTpm` flags when set) and creation time.
 - **disks** — managed disks: SKU, size, generation (`hyperVGeneration`), security type, state and the VM they
   belong to. Unattached disks are marked — they are still billed. Generation and security type matter when
   reusing a disk (e.g. building an image from a snapshot): an unsupported combination is a common reason
@@ -74,7 +74,9 @@ report, not a sortable list).
   API: snapshot price per GB actually used, and the fixed monthly price of each disk tier (`S4`…`S80`, by
   provisioned size rounded up). Azure does not document which of the two models a standalone image
   (`Microsoft.Compute/images`) is billed under, so the tool returns both and suggests checking the actual
-  cost with `costs` once a real image exists. `region` is required (e.g. `eastus`).
+  cost with `costs` once a real image exists. With optional `size` (a VM size, e.g. `Standard_D4als_v6`) it
+  also returns that size's on-demand hourly price, Linux and Windows separately (Windows costs more: it
+  includes the license). `region` is required (e.g. `eastus`).
 - **advisor** — Azure Advisor recommendations for the subscription (all categories: `Cost`,
   `HighAvailability`, `Security`, `Performance`, `OperationalExcellence`), each with its impact, the affected
   resource (or "subscription" for a subscription-level recommendation), the estimated annual saving when the
@@ -86,6 +88,14 @@ report, not a sortable list).
 - **quota** — regional quota usage: `compute` (VM family vCPU quotas) and/or `network` (public IPs, VNets,
   NSGs, ...), each with its current and maximum value; a quota at its limit is marked. `region` is required;
   optional `kind` (`compute` or `network`) narrows to one of the two.
+- **skus** — VM sizes available in a region: family (matches the family names `quota` reports), vCPU count
+  and memory. Calls `Microsoft.Compute/skus` directly; `az vm list-skus` itself turned out to be
+  resource-heavy (it installs and runs a CLI extension), which a plain REST call avoids. `region` is
+  required; optional `size` keeps one VM size, otherwise the whole regional catalog is returned (a few
+  hundred lines).
+- **support** — the subscription's support tickets: id, status, severity, service, problem classification,
+  creation date and title, newest first. The submitter's contact details are in the API response but are
+  deliberately not surfaced by this tool.
 
 ## Authentication
 
@@ -154,8 +164,8 @@ Add `-e AZURE_SBSCRPTN=<subscription id>` to pin a subscription. Since every too
 be allowed without a prompt: `mcp__azure-mcp__costs`, `mcp__azure-mcp__pubips`, `mcp__azure-mcp__nics`,
 `mcp__azure-mcp__nsgrules`, `mcp__azure-mcp__firewall`, `mcp__azure-mcp__dnszones`, `mcp__azure-mcp__vms`,
 `mcp__azure-mcp__disks`, `mcp__azure-mcp__snapshots`, `mcp__azure-mcp__vnets`, `mcp__azure-mcp__resources`,
-`mcp__azure-mcp__pricing`, `mcp__azure-mcp__advisor`, `mcp__azure-mcp__account` and `mcp__azure-mcp__quota`
-in `permissions.allow`.
+`mcp__azure-mcp__pricing`, `mcp__azure-mcp__advisor`, `mcp__azure-mcp__account`, `mcp__azure-mcp__quota`,
+`mcp__azure-mcp__skus` and `mcp__azure-mcp__support` in `permissions.allow`.
 
 ## License
 
