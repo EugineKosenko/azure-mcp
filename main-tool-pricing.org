@@ -2,8 +2,10 @@
 
 Ціни зберігання ~Standard HDD Managed Disks~ у заданому регіоні: снепшоти (~LRS~ / ~ZRS~, за фактично
 використаний ГБ на місяць) і рівні дисків (~S4~–~S80~, за виділений розмір, округлення вгору) — з
-публічного =Azure Retail Prices= (без автентифікації, не =arm=, див. [[file:main-client.org][~main-client.org~]]). Аргумент
-~region~ обов'язковий. Опис для ~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
+публічного =Azure Retail Prices= (без автентифікації, не =arm=, див. [[file:main-client.org][~main-client.org~]]). З необов'язковим
+~size~ (напр. ~Standard_D4als_v6~, порівняй з [[file:main-tool-skus.org][~skus~]]) до відповіді додається ще й погодинна ціна цього
+типу VM — окремо ~Linux~ і ~Windows~ (Windows дорожча через ліцензію). Аргумент ~region~
+обов'язковий. Опис для ~tools/list~ і диспетчеризація — в [[file:main-tools.org][~main-tools.org~]].
 
 * Модуль
 
@@ -100,6 +102,38 @@
   }
 #+end_src
 
+* VM compute
+
+Погодинна ціна конкретного типу VM — окрема пара запитів ~$filter~ (за ~armSkuName~), а не частина
+основного: без ~size~ вона зайва. ~meterName~ без суфіксів ~ Spot~ / ~ Low Priority~ — звичайна (on-demand)
+ціна; ~productName~ з ~Windows~ і без — дві різні ціни того самого розміру, перевірено живим викликом
+2026-09-25 (~Standard_D4als_v6~ в ~eastus~: ~0.161~ =Linux=, ~0.345~ =Windows=).
+
+#+begin_src rust :noweb-ref Визначення
+  fn hourly(items: &[serde_json::Value], windows: bool) -> Option<f64> {
+      items
+          .iter()
+          .filter(|item| !tools::text(item, "/meterName").contains("Spot"))
+          .filter(|item| !tools::text(item, "/meterName").contains("Low Priority"))
+          .find(|item| tools::text(item, "/productName").contains("Windows") == windows)
+          .and_then(|item| item["retailPrice"].as_f64())
+  }
+
+  fn vm(items: &[serde_json::Value], size: &str) -> String {
+      if items.is_empty() {
+          return format!("VM {}: цін не знайдено (перевірте назву типу, напр. через skus).", size);
+      }
+
+      format!(
+          "VM {} ({} на годину):\nLinux    {}\nWindows  {}",
+          size,
+          currency(items),
+          hourly(items, false).map_or("-".to_string(), |price| format!("{:.3}", price)),
+          hourly(items, true).map_or("-".to_string(), |price| format!("{:.3}", price)),
+      )
+  }
+#+end_src
+
 * Дія
 
 #+begin_src rust :noweb-ref Дії
@@ -107,8 +141,17 @@
       return tools::reply(Err("Аргумент region обов'язковий (armRegionName, напр. eastus).".to_string()));
   };
   let filter = format!("armRegionName eq '{}' and productName eq 'Standard HDD Managed Disks'", region);
+  let storage = match client::retail(http, &filter).await {
+      Ok(items) => items,
+      Err(message) => return tools::reply(Err(message)),
+  };
 
-  tools::reply(client::retail(http, &filter).await.map(|items| table(&items)))
+  let Some(size) = arguments["size"].as_str() else {
+      return tools::reply(Ok(table(&storage)));
+  };
+  let filter = format!("armRegionName eq '{}' and armSkuName eq '{}' and priceType eq 'Consumption'", region, size);
+
+  tools::reply(client::retail(http, &filter).await.map(|items| format!("{}\n\n{}", table(&storage), vm(&items, size))))
 #+end_src
 
 * Перевірки
@@ -141,5 +184,27 @@
   #[test]
   fn table_empty_is_a_hint() {
       assert_eq!(table(&[]), "Цін не знайдено (перевірте код регіону).".to_string());
+  }
+
+  fn vm_items() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.138, "meterName": "D4als v6 Low Priority", "productName": "Virtual Machines Dalsv6 Series Windows" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.345, "meterName": "D4als v6", "productName": "Virtual Machines Dalsv6 Series Windows" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.161, "meterName": "D4als v6", "productName": "Virtual Machines Dalsv6 Series" }),
+          serde_json::json!({ "currencyCode": "USD", "retailPrice": 0.032, "meterName": "D4als v6 Spot", "productName": "Virtual Machines Dalsv6 Series" }),
+      ]
+  }
+
+  #[test]
+  fn vm_picks_on_demand_linux_and_windows() {
+      assert_eq!(
+          vm(&vm_items(), "Standard_D4als_v6"),
+          "VM Standard_D4als_v6 (USD на годину):\nLinux    0.161\nWindows  0.345"
+      );
+  }
+
+  #[test]
+  fn vm_empty_is_a_hint() {
+      assert_eq!(vm(&[], "Standard_Unknown"), "VM Standard_Unknown: цін не знайдено (перевірте назву типу, напр. через skus).");
   }
 #+end_src

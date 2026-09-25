@@ -14,6 +14,8 @@ mod quota;
 mod snapshots;
 mod vnets;
 mod resources;
+mod skus;
+mod support;
 
 pub fn list() -> serde_json::Value {
     serde_json::json!([
@@ -129,11 +131,12 @@ pub fn list() -> serde_json::Value {
         },
         {
             "name": "pricing",
-            "description": "Ціни зберігання Standard HDD Managed Disks у регіоні: снепшоти LRS/ZRS (за фактично використаний ГБ на місяць) і рівні дисків S4–S80 (за виділений розмір, округлення вгору до рівня, на місяць) — з публічного Azure Retail Prices, без автентифікації й без прив'язки до підписки. Ціну образу (Microsoft.Compute/images) Azure окремо не документує, тому відповідь показує обидві моделі й радить перевірити фактичну через costs після створення першого образу.",
+            "description": "Ціни зберігання Standard HDD Managed Disks у регіоні: снепшоти LRS/ZRS (за фактично використаний ГБ на місяць) і рівні дисків S4–S80 (за виділений розмір, округлення вгору до рівня, на місяць) — з публічного Azure Retail Prices, без автентифікації й без прив'язки до підписки. Ціну образу (Microsoft.Compute/images) Azure окремо не документує, тому відповідь показує обидві моделі й радить перевірити фактичну через costs після створення першого образу. Необов'язковий size (напр. Standard_D4als_v6) додає до відповіді погодинну ціну цього типу VM окремо для Linux і Windows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "region": { "type": "string", "description": "Код регіону Azure (armRegionName), напр. eastus" }
+                    "region": { "type": "string", "description": "Код регіону Azure (armRegionName), напр. eastus" },
+                    "size": { "type": "string", "description": "Тип VM (armSkuName), напр. Standard_D4als_v6 — додає погодинну ціну compute" }
                 },
                 "required": ["region"],
                 "additionalProperties": false
@@ -215,6 +218,31 @@ pub fn list() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "skus",
+            "description": "Типи VM регіону: family (звірити з quota), vCPU, RAM — з каталогу Microsoft.Compute/skus. Заміна az vm list-skus --location --size (сама ця команда az ресурсоємна: ставить розширення, запускає окремий python-процес). Необов'язковий size лишає один тип; без нього — увесь каталог регіону (кілька сотень рядків).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "region": { "type": "string", "description": "Код регіону Azure, напр. eastus" },
+                    "size": { "type": "string", "description": "Лише цей тип VM, напр. Standard_D4als_v6" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "required": ["region"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "support",
+            "description": "Запити підтримки підписки: ідентифікатор, стан, критичність, служба/класифікація проблеми, дата створення, заголовок — найновіші перші. Заміна az support in-subscription tickets list/show. Контактні дані того, хто відкрив запит, є у відповіді Azure, але свідомо не показуються.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -236,6 +264,8 @@ pub async fn call(http: &reqwest::Client, name: &str, arguments: &serde_json::Va
         "snapshots" => snapshots::run(http, arguments).await,
         "vnets" => vnets::run(http, arguments).await,
         "resources" => resources::run(http, arguments).await,
+        "skus" => skus::run(http, arguments).await,
+        "support" => support::run(http, arguments).await,
         _ => reply(Err(format!("Невідомий інструмент: {}", name)))
     }
 }

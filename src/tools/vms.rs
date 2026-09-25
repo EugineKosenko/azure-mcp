@@ -70,7 +70,7 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
             let (private, public) = addresses(vm, &nics, &ips);
 
             format!(
-                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}",
+                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}",
                 tools::text(vm, "/name"),
                 tools::part(tools::text(vm, "/id"), "resourceGroups").to_lowercase(),
                 tools::text(vm, "/location"),
@@ -80,6 +80,7 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
                 private,
                 public,
                 security(vm),
+                tools::text(vm, "/properties/timeCreated"),
             )
         })
         .collect();
@@ -117,6 +118,7 @@ mod tests {
                     "storageProfile": { "osDisk": { "osType": "Linux" } },
                     "networkProfile": { "networkInterfaces": [{ "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/nic1" }] },
                     "securityProfile": { "securityType": "TrustedLaunch", "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true } },
+                    "timeCreated": "2026-09-20T07:06:17.5125651+00:00",
                 },
             }),
             serde_json::json!({
@@ -168,8 +170,8 @@ mod tests {
     fn table_joins_status_and_addresses() {
         assert_eq!(
             table(&vms(), &status(), &nics(), &ips(), None),
-            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)\n\
-             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-"
+            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00\n\
+             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-"
         );
     }
     
@@ -184,7 +186,7 @@ mod tests {
         assert_eq!(power(None), "-");
         assert_eq!(
             table(&vms(), &[], &nics(), &ips(), Some("win-server")),
-            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-"
+            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-"
         );
     }
     
