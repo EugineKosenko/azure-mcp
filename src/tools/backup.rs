@@ -21,7 +21,7 @@ fn vault(item: &serde_json::Value, full: &serde_json::Value, config: &serde_json
         tools::text(item, "/sku/name"),
         redundancy(config),
         count,
-        tools::text(full, "/properties/securitySettings/immutabilitySettings/state"),
+        full.pointer("/properties/securitySettings/immutabilitySettings/state").and_then(|state| state.as_str()).unwrap_or("unreported"),
         tools::text(full, "/properties/securitySettings/softDeleteSettings/softDeleteState"),
         tools::shown(full, "/properties/securitySettings/softDeleteSettings/softDeleteRetentionPeriodInDays"),
         tools::text(full, "/properties/securitySettings/softDeleteSettings/enhancedSecurityState"),
@@ -219,7 +219,7 @@ mod tests {
         let config = serde_json::json!({ "properties": { "storageModelType": "GeoRedundant" } });
     
         assert_eq!(vault(&one, &full, &config, 2), "demo-br-eastus  demo-rg  eastus  RS0  storage=GRS  items=2  immutable=Locked  softdelete=Enabled(14d,enhanced=Enabled)  mua=Disabled  crr=Disabled");
-        assert!(vault(&one, &serde_json::json!({}), &config, 0).ends_with("immutable=-  softdelete=-(-d,enhanced=-)  mua=-  crr=-"));
+        assert!(vault(&one, &serde_json::json!({}), &config, 0).ends_with("immutable=unreported  softdelete=-(-d,enhanced=-)  mua=-  crr=-"));
         assert_eq!(redundancy(&serde_json::json!({})), "-");
     }
 }

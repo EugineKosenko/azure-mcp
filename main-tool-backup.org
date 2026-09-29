@@ -40,15 +40,17 @@
 
 Рядок сховища: група, регіон, SKU, тип зберігання й кількість захищених елементів, а далі (у кінці рядка)
 налаштування безпеки, які вирішують, чи вдасться видалити дані бекапу: ~immutable~ — незмінність сховища
-(~Disabled~ / ~Unlocked~ / ~Locked~; заблокована незмінність не дає видалити точки відновлення й зупинити
-захист із видаленням даних, помилка ~UserErrorDeleteBackupItemOnImmutableItem~); ~softdelete~ — стан
-м'якого видалення, кількість діб зберігання видалених даних і ~enhanced~ (~Enabled~ — «завжди увімкнене»,
-вимкнути не можна); ~mua~ — багатокористувацька авторизація (~multiUserAuthorization~); ~crr~ —
-відновлення між регіонами (~crossRegionRestore~). Усе це поля ~properties~ самого сховища
-(~securitySettings~, ~redundancySettings~); перелік сховищ області їх не повертає (лише ім'я, регіон,
-SKU), тож для кожного сховища додатково читається саме сховище (~GET {сховище}~). ~storageModelType~
-=Azure= повертає словом (~LocallyRedundant~, ~GeoRedundant~, ~ZoneRedundant~), у таблицю потрапляє звична
-абревіатура (~LRS~, ~GRS~, ~ZRS~); невідоме значення показуємо як є.
+(~Disabled~ / ~Unlocked~ / ~Locked~; увімкнена незмінність (~Unlocked~ чи ~Locked~) не дає видалити точки
+відновлення й зупинити захист із видаленням даних, помилка ~UserErrorDeleteBackupItemOnImmutableItem~,
+підтверджено на практиці з ~Unlocked~; ~unreported~ — =Azure= блок налаштувань не повернув, стан
+невідомий); ~softdelete~ — стан м'якого видалення, кількість діб зберігання видалених даних і ~enhanced~
+(~Enabled~ — «завжди увімкнене», вимкнути не можна); ~mua~ — багатокористувацька авторизація
+(~multiUserAuthorization~); ~crr~ — відновлення між регіонами (~crossRegionRestore~). Усе це поля
+~properties~ самого сховища (~securitySettings~, ~redundancySettings~); перелік сховищ області їх не
+повертає (лише ім'я, регіон, SKU), тож для кожного сховища додатково читається саме сховище (~GET
+{сховище}~). ~storageModelType~ =Azure= повертає словом (~LocallyRedundant~, ~GeoRedundant~,
+~ZoneRedundant~), у таблицю потрапляє звична абревіатура (~LRS~, ~GRS~, ~ZRS~); невідоме значення
+показуємо як є.
 
 #+begin_src rust :noweb-ref Декларації
   use crate::client;
@@ -76,7 +78,7 @@ SKU), тож для кожного сховища додатково читає�
           tools::text(item, "/sku/name"),
           redundancy(config),
           count,
-          tools::text(full, "/properties/securitySettings/immutabilitySettings/state"),
+          full.pointer("/properties/securitySettings/immutabilitySettings/state").and_then(|state| state.as_str()).unwrap_or("unreported"),
           tools::text(full, "/properties/securitySettings/softDeleteSettings/softDeleteState"),
           tools::shown(full, "/properties/securitySettings/softDeleteSettings/softDeleteRetentionPeriodInDays"),
           tools::text(full, "/properties/securitySettings/softDeleteSettings/enhancedSecurityState"),
@@ -309,7 +311,7 @@ SKU), тож для кожного сховища додатково читає�
       let config = serde_json::json!({ "properties": { "storageModelType": "GeoRedundant" } });
 
       assert_eq!(vault(&one, &full, &config, 2), "demo-br-eastus  demo-rg  eastus  RS0  storage=GRS  items=2  immutable=Locked  softdelete=Enabled(14d,enhanced=Enabled)  mua=Disabled  crr=Disabled");
-      assert!(vault(&one, &serde_json::json!({}), &config, 0).ends_with("immutable=-  softdelete=-(-d,enhanced=-)  mua=-  crr=-"));
+      assert!(vault(&one, &serde_json::json!({}), &config, 0).ends_with("immutable=unreported  softdelete=-(-d,enhanced=-)  mua=-  crr=-"));
       assert_eq!(redundancy(&serde_json::json!({})), "-");
   }
 #+end_src
