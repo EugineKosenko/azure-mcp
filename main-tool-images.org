@@ -1,0 +1,170 @@
+#+title: Інструмент ~images~
+
+Повертає класичні образи ~Microsoft.Compute/images~: ім'я, група, регіон, ОС, покоління, стан ОС, розмір
+диска, дату створення, джерело й стан. Лише читання, вміст дисків не читається. Галереї образів (=Azure
+Compute Gallery=) — окремий інструмент, [[file:main-tool-galleries.org][~galleries~]]. Опис для ~tools/list~ і диспетчеризація — в
+[[file:main-tools.org][~main-tools.org~]].
+
+Виклик — ~GET .../providers/Microsoft.Compute/images~ (~api-version=2024-07-01~; підтверджено живим
+викликом). Самі образи не мають дати створення, тож вона береться другим запитом: загальний перелік
+ресурсів із ~$expand=createdTime~, звужений типом (~api-version=2021-04-01~, як у [[file:main-tool-resources.org][~resources~]]), і
+зіставляється за ідентифікатором.
+
+* Модуль
+
+#+begin_src rust :noweb yes :mkdirp yes :tangle src/tools/images.rs
+  <<Декларації>>
+
+  <<Визначення>>
+
+  pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+      <<Дії>>
+  }
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+
+      <<Тести>>
+  }
+#+end_src
+
+* Таблиця
+
+~source~ — звідки створено образ: ~vm=~ (~sourceVirtualMachine~), ~disk=~ (керований диск ОС),
+~snapshot=~ чи ~vhd=~ (~blobUri~), у кожному випадку лише ім'я (останній сегмент). ~-~, коли жодного
+джерела не задано.  ~osState~ — ~Generalized~ (узагальнений, придатний для створення нових VM) чи
+~Specialized~ (знімок конкретної VM). ~created~ — дата з окремого запиту (див. вище), ~-~, коли ресурс у
+ньому не знайдено.  Фільтр ~name~ не залежить від регістру.
+
+#+begin_src rust :noweb-ref Декларації
+  use std::collections::HashMap;
+
+  use crate::client;
+  use crate::tools;
+#+end_src
+
+#+begin_src rust :noweb-ref Визначення
+  fn source(image: &serde_json::Value) -> String {
+      [
+          ("/properties/sourceVirtualMachine/id", "vm"),
+          ("/properties/storageProfile/osDisk/managedDisk/id", "disk"),
+          ("/properties/storageProfile/osDisk/snapshot/id", "snapshot"),
+          ("/properties/storageProfile/osDisk/blobUri", "vhd"),
+      ]
+      .iter()
+      .find(|(pointer, _)| tools::text(image, pointer) != "-")
+      .map(|(pointer, label)| format!("{}={}", label, tools::last(tools::text(image, pointer))))
+      .unwrap_or("-".to_string())
+  }
+
+  fn line(image: &serde_json::Value, created: &HashMap<String, String>) -> String {
+      format!(
+          "{}  {}  {}  {}  {}  {}  {} ГБ  created={}  source={}  {}",
+          tools::text(image, "/name"),
+          tools::part(tools::text(image, "/id"), "resourceGroups").to_lowercase(),
+          tools::text(image, "/location"),
+          tools::text(image, "/properties/storageProfile/osDisk/osType"),
+          tools::text(image, "/properties/hyperVGeneration"),
+          tools::text(image, "/properties/storageProfile/osDisk/osState"),
+          tools::shown(image, "/properties/storageProfile/osDisk/diskSizeGB"),
+          created.get(&tools::text(image, "/id").to_lowercase()).map_or("-", |date| date.as_str()),
+          source(image),
+          tools::text(image, "/properties/provisioningState"),
+      )
+  }
+
+  fn table(images: &[serde_json::Value], created: &HashMap<String, String>, name: Option<&str>) -> String {
+      let lines: Vec<String> = tools::sorted(images)
+          .into_iter()
+          .filter(|image| name.is_none_or(|name| tools::same(tools::text(image, "/name"), name)))
+          .map(|image| line(image, created))
+          .collect();
+
+      if lines.is_empty() { "Образів не знайдено.".to_string() } else { lines.join("\n") }
+  }
+#+end_src
+
+* Дата створення
+
+Відповідь загального переліку ресурсів несе ~createdTime~ (лише з ~$expand~). У таблицю потрапляє лише
+день (перші десять символів), ключ — ідентифікатор образа малими літерами, бо =Azure= повертає регістр
+сегментів по-різному в різних відповідях.
+
+#+begin_src rust :noweb-ref Визначення
+  fn dates(resources: &[serde_json::Value]) -> HashMap<String, String> {
+      resources
+          .iter()
+          .map(|item| (tools::text(item, "/id").to_lowercase(), tools::text(item, "/createdTime").chars().take(10).collect()))
+          .collect()
+  }
+#+end_src
+
+* Дія
+
+#+begin_src rust :noweb-ref Дії
+  let scope = match tools::scope(arguments).await {
+      Ok(scope) => scope,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let images = match client::list(http, &format!("{}/providers/Microsoft.Compute/images?api-version=2024-07-01", scope)).await {
+      Ok(images) => images,
+      Err(message) => return tools::reply(Err(message)),
+  };
+  let path = format!("{}/resources?$filter=resourceType eq 'Microsoft.Compute/images'&$expand=createdTime&api-version=2021-04-01", scope);
+
+  tools::reply(client::list(http, &path).await.map(|resources| table(&images, &dates(&resources), arguments["name"].as_str())))
+#+end_src
+
+* Перевірки
+
+Дані вигадані, форма — відповіді =arm=.
+
+#+begin_src rust :noweb-ref Тести
+  fn images() -> Vec<serde_json::Value> {
+      vec![
+          serde_json::json!({
+              "name": "web-image",
+              "id": "/subscriptions/s/resourceGroups/DEMO-RG/providers/Microsoft.Compute/images/web-image",
+              "location": "eastus",
+              "properties": {
+                  "hyperVGeneration": "V2",
+                  "provisioningState": "Succeeded",
+                  "sourceVirtualMachine": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/virtualMachines/web-vm" },
+                  "storageProfile": { "osDisk": { "osType": "Linux", "osState": "Generalized", "diskSizeGB": 30 } },
+              },
+          }),
+          serde_json::json!({
+              "name": "old-image",
+              "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/images/old-image",
+              "location": "canadacentral",
+              "properties": {
+                  "provisioningState": "Succeeded",
+                  "storageProfile": { "osDisk": { "osType": "Linux", "osState": "Specialized", "blobUri": "https://demostore.blob.core.windows.net/vhds/debian.vhd", "diskSizeGB": 4 } },
+              },
+          }),
+      ]
+  }
+
+  fn created() -> HashMap<String, String> {
+      dates(&[serde_json::json!({
+          "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/images/web-image",
+          "createdTime": "2026-09-01T10:00:00.1234567Z",
+      })])
+  }
+
+  #[test]
+  fn table_shows_source_and_created() {
+      assert_eq!(
+          table(&images(), &created(), None),
+          "old-image  demo-rg  canadacentral  Linux  -  Specialized  4 ГБ  created=-  source=vhd=debian.vhd  Succeeded\n\
+           web-image  demo-rg  eastus  Linux  V2  Generalized  30 ГБ  created=2026-09-01  source=vm=web-vm  Succeeded"
+      );
+  }
+
+  #[test]
+  fn table_filters_by_name() {
+      assert!(table(&images(), &created(), Some("WEB-IMAGE")).starts_with("web-image"));
+      assert_eq!(table(&images(), &created(), Some("other")), "Образів не знайдено.".to_string());
+  }
+#+end_src

@@ -3,7 +3,8 @@
 A read-only [MCP](https://modelcontextprotocol.io) server for the parts of [Microsoft Azure](https://azure.microsoft.com)
 that an assistant most often needs to look at and that the official Azure MCP server does not cover well:
 actual costs, retail storage prices, network resources, MySQL firewall rules, virtual machines, disks and
-snapshots, Advisor recommendations, the subscription itself and its regional quotas. It is written in Rust as
+snapshots, storage accounts, images and galleries, Azure Backup, Advisor recommendations, the subscription itself and its
+regional quotas. It is written in Rust as
 a literate [org-babel](https://orgmode.org/worg/org-contrib/babel/) program and talks the standard MCP
 `stdio` transport, so an LLM assistant can call it directly.
 
@@ -96,6 +97,25 @@ report, not a sortable list).
 - **support** — the subscription's support tickets: id, status, severity, service, problem classification,
   creation date and title, newest first. The submitter's contact details are in the API response but are
   deliberately not surfaced by this tool.
+- **storage** — Storage accounts: name, group, region, SKU, kind, access tier and creation date. With
+  `account` it adds the account's containers; with `container` the blobs of that container (name, size,
+  type, tier, last modified) and their total size; with `sizes=true` the blob count and total size of every
+  container (the ARM API does not report an account size). Read-only: account keys and blob contents are
+  never used. Listing blobs is a data-plane call authorized with an Azure AD token, and needs the
+  **Storage Blob Data Reader** role (see below).
+- **images** — classic images (`Microsoft.Compute/images`): name, group, region, OS type, Hyper-V generation,
+  OS state, OS disk size, creation date, source (`vm=`, `disk=`, `snapshot=` or `vhd=`) and state. Optional
+  `name` keeps one image.
+- **galleries** — Azure Compute Galleries: each gallery with its image definitions (OS, generation, OS state,
+  `publisher/offer/sku`) and their versions (OS disk size, published and end-of-life dates, exclusion from
+  `latest`, replication per region with replica count and storage type, source, state). Optional `name` keeps
+  one gallery.
+- **backup** — Azure Backup: Recovery Services vaults (group, region, SKU, storage redundancy LRS/GRS/ZRS,
+  protected item count, immutability, soft delete, multi-user authorization and cross-region restore state), their policies (schedule, retention per daily/weekly/monthly/yearly level, instant
+  snapshot retention, number of items using the policy) and protected items (name, type, policy, protection
+  state, health, last backup result and time, recovery point count). Read-only: no restore operations and no
+  protection changes. Stored data size and per-item cost are not shown (ARM does not report them as a field;
+  cost is available through `costs`). Optional `name` keeps one vault.
 
 ## Authentication
 
@@ -117,8 +137,12 @@ with pauses of 5, 15 and 30 seconds (or the `Retry-After` the response carries, 
 minute); then the tool answers with a clear error. Cost responses are cached on disk for an hour, and a
 cached answer says how old it is. Errors `401`, `403` and `404` come with a hint on what to check.
 
-The account needs the built-in **Reader** role on what it should look at, and **Cost Management Reader** for
-`costs`.
+The blob listing of `storage` uses a second token, for the audience `https://storage.azure.com/`, obtained
+the same way (`az account get-access-token --resource https://storage.azure.com/`); it is cached separately.
+
+The account needs the built-in **Reader** role on what it should look at, **Cost Management Reader** for
+`costs`, and **Storage Blob Data Reader** on a storage account or container for the blob listing of `storage`
+(the management **Reader** role does not grant data access; without it Azure answers `403`).
 
 ## Source layout
 
@@ -165,7 +189,8 @@ be allowed without a prompt: `mcp__azure-mcp__costs`, `mcp__azure-mcp__pubips`, 
 `mcp__azure-mcp__nsgrules`, `mcp__azure-mcp__firewall`, `mcp__azure-mcp__dnszones`, `mcp__azure-mcp__vms`,
 `mcp__azure-mcp__disks`, `mcp__azure-mcp__snapshots`, `mcp__azure-mcp__vnets`, `mcp__azure-mcp__resources`,
 `mcp__azure-mcp__pricing`, `mcp__azure-mcp__advisor`, `mcp__azure-mcp__account`, `mcp__azure-mcp__quota`,
-`mcp__azure-mcp__skus` and `mcp__azure-mcp__support` in `permissions.allow`.
+`mcp__azure-mcp__skus`, `mcp__azure-mcp__support`, `mcp__azure-mcp__storage`, `mcp__azure-mcp__images` and
+`mcp__azure-mcp__galleries` and `mcp__azure-mcp__backup` in `permissions.allow`.
 
 ## License
 

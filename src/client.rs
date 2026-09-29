@@ -7,6 +7,8 @@ use reqwest::Method;
 use reqwest::Url;
 
 const ARM: &str = "https://management.azure.com";
+const BLOB: &str = "https://storage.azure.com/";
+const VERSION: &str = "2023-11-03";
 const LOGIN: &str = "Якщо це AADSTS50078 (сплив термін багатофакторної автентифікації), користувач має виконати інтерактивно: az login --scope https://management.core.windows.net//.default (за потреби з --tenant <тенант>).";
 
 async fn az(args: &[&str]) -> Result<String, String> {
@@ -33,34 +35,36 @@ struct Token {
     until: Instant,
 }
 
-static TOKEN: Mutex<Option<Token>> = Mutex::new(None);
+static TOKENS: Mutex<Vec<(String, Token)>> = Mutex::new(Vec::new());
 
-fn saved() -> Option<String> {
-    let guard = TOKEN.lock().unwrap();
+fn saved(audience: &str) -> Option<String> {
+    let guard = TOKENS.lock().unwrap();
 
-    guard.as_ref().filter(|token| token.until > Instant::now()).map(|token| token.value.clone())
+    guard.iter().find(|(key, token)| key == audience && token.until > Instant::now()).map(|(_, token)| token.value.clone())
 }
 
-fn save(value: &str, epoch: u64) {
+fn save(audience: &str, value: &str, epoch: u64) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let left = epoch.saturating_sub(now).saturating_sub(60);
+    let mut guard = TOKENS.lock().unwrap();
 
-    *TOKEN.lock().unwrap() = Some(Token { value: value.to_string(), until: Instant::now() + Duration::from_secs(left) });
+    guard.retain(|(key, _)| key != audience);
+    guard.push((audience.to_string(), Token { value: value.to_string(), until: Instant::now() + Duration::from_secs(left) }));
 }
 
-async fn token() -> Result<String, String> {
-    if let Some(value) = saved() {
+async fn token(audience: &str) -> Result<String, String> {
+    if let Some(value) = saved(audience) {
         return Ok(value);
     }
 
     let text = az(&[
-        "account", "get-access-token", "--resource", ARM,
+        "account", "get-access-token", "--resource", audience,
         "--query", "{token: accessToken, until: expires_on}", "-o", "json",
     ]).await?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     let value = json["token"].as_str().unwrap();
 
-    save(value, json["until"].as_u64().unwrap());
+    save(audience, value, json["until"].as_u64().unwrap());
 
     Ok(value.to_string())
 }
@@ -112,7 +116,7 @@ fn limits(response: &reqwest::Response) -> String {
 fn hint(status: u16) -> &'static str {
     match status {
         401 => "Токен не прийнято. Новий вхід робить лише користувач, інтерактивно: az login --scope https://management.core.windows.net//.default (за потреби з --tenant <тенант>).",
-        403 => "Недостатньо прав на цю область: для читання потрібна роль Reader (для costs — Cost Management Reader).",
+        403 => "Недостатньо прав на цю область: для читання потрібна роль Reader (для costs — Cost Management Reader, для переліку blob-ів — Storage Blob Data Reader на обліковий запис чи контейнер).",
         404 => "Перевірте назву групи ресурсів (az group list) і підписки (az account list): неіснуюча область дає 404.",
         _ => "",
     }
@@ -125,11 +129,15 @@ fn failure(status: reqwest::StatusCode, url: &str, text: &str) -> String {
     }
 }
 
-async fn send(http: &reqwest::Client, method: Method, url: &str, body: Option<&serde_json::Value>) -> Result<String, String> {
+async fn send(http: &reqwest::Client, method: Method, url: &str, body: Option<&serde_json::Value>, audience: &str) -> Result<String, String> {
     let mut pauses = PAUSES.iter();
 
     loop {
-        let mut request = http.request(method.clone(), url).bearer_auth(token().await?);
+        let mut request = http.request(method.clone(), url).bearer_auth(token(audience).await?);
+
+        if audience == BLOB {
+            request = request.header("x-ms-version", VERSION);
+        }
 
         if let Some(body) = body {
             request = request.header("content-type", "application/json").body(body.to_string());
@@ -168,7 +176,7 @@ pub async fn query(http: &reqwest::Client, path: &str, body: &serde_json::Value,
         }
     }
 
-    let text = send(http, Method::POST, &url, Some(body)).await?;
+    let text = send(http, Method::POST, &url, Some(body), ARM).await?;
 
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(&cache, &text).unwrap();
@@ -180,7 +188,7 @@ pub async fn list(http: &reqwest::Client, path: &str) -> Result<Vec<serde_json::
     let mut items = Vec::new();
 
     loop {
-        let body: serde_json::Value = serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&send(http, Method::GET, &url, None, ARM).await?).unwrap();
 
         items.extend(body["value"].as_array().unwrap().iter().cloned());
 
@@ -193,7 +201,18 @@ pub async fn list(http: &reqwest::Client, path: &str) -> Result<Vec<serde_json::
 pub async fn get(http: &reqwest::Client, path: &str) -> Result<serde_json::Value, String> {
     let url = format!("{}{}", ARM, path);
 
-    Ok(serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap())
+    Ok(serde_json::from_str(&send(http, Method::GET, &url, None, ARM).await?).unwrap())
+}
+pub async fn page(http: &reqwest::Client, account: &str, container: &str, marker: Option<&str>) -> Result<String, String> {
+    let mut address = Url::parse(&format!("https://{}.blob.core.windows.net/{}", account, container)).map_err(|error| format!("Некоректне ім'я облікового запису чи контейнера: {}", error))?;
+
+    address.query_pairs_mut().append_pair("restype", "container").append_pair("comp", "list").append_pair("maxresults", "5000");
+
+    if let Some(marker) = marker {
+        address.query_pairs_mut().append_pair("marker", marker);
+    }
+
+    send(http, Method::GET, address.as_str(), None, BLOB).await
 }
 const RETAIL: &str = "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview";
 

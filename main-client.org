@@ -21,10 +21,17 @@
   }
 #+end_src
 
-* Базова адреса
+* Базові адреси
+
+~ARM~ — адреса й водночас аудиторія токена для =arm=. ~BLOB~ — аудиторія токена для рівня даних =Azure
+Storage= (перелік ~blob~-ів; ~arm~ дає лише контейнери): токен для нього видається без ключів облікового
+запису, а читати ним можна за роллю ~Storage Blob Data Reader~. ~VERSION~ — версія ~api~ =Azure Storage=:
+заголовок ~x-ms-version~ обов'язковий для автентифікації через =Azure AD=.
 
 #+begin_src rust :noweb-ref Визначення
   const ARM: &str = "https://management.azure.com";
+  const BLOB: &str = "https://storage.azure.com/";
+  const VERSION: &str = "2023-11-03";
 #+end_src
 
 * Виклик ~az~
@@ -78,8 +85,9 @@ show~ у цьому випадку успішний (читає лише лок�
 * Токен
 
 Токен кешується в пам'яті процесу до закінчення (~expires_on~ — епоха в секундах, це перевірено на живому
-~az~ 2.77) із запасом у хвилину. Замок береться лише в синхронних функціях, щоб його не тримати через
-~await~.
+~az~ 2.77) із запасом у хвилину, окремо для кожної аудиторії (~audience~): токен для =arm= не годиться
+для рівня даних =Azure Storage= і навпаки. Замок береться лише в синхронних функціях, щоб його не тримати
+через ~await~.
 
 #+begin_src rust :noweb-ref Декларації
   use std::sync::Mutex;
@@ -92,34 +100,36 @@ show~ у цьому випадку успішний (читає лише лок�
       until: Instant,
   }
 
-  static TOKEN: Mutex<Option<Token>> = Mutex::new(None);
+  static TOKENS: Mutex<Vec<(String, Token)>> = Mutex::new(Vec::new());
 
-  fn saved() -> Option<String> {
-      let guard = TOKEN.lock().unwrap();
+  fn saved(audience: &str) -> Option<String> {
+      let guard = TOKENS.lock().unwrap();
 
-      guard.as_ref().filter(|token| token.until > Instant::now()).map(|token| token.value.clone())
+      guard.iter().find(|(key, token)| key == audience && token.until > Instant::now()).map(|(_, token)| token.value.clone())
   }
 
-  fn save(value: &str, epoch: u64) {
+  fn save(audience: &str, value: &str, epoch: u64) {
       let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
       let left = epoch.saturating_sub(now).saturating_sub(60);
+      let mut guard = TOKENS.lock().unwrap();
 
-      *TOKEN.lock().unwrap() = Some(Token { value: value.to_string(), until: Instant::now() + Duration::from_secs(left) });
+      guard.retain(|(key, _)| key != audience);
+      guard.push((audience.to_string(), Token { value: value.to_string(), until: Instant::now() + Duration::from_secs(left) }));
   }
 
-  async fn token() -> Result<String, String> {
-      if let Some(value) = saved() {
+  async fn token(audience: &str) -> Result<String, String> {
+      if let Some(value) = saved(audience) {
           return Ok(value);
       }
 
       let text = az(&[
-          "account", "get-access-token", "--resource", ARM,
+          "account", "get-access-token", "--resource", audience,
           "--query", "{token: accessToken, until: expires_on}", "-o", "json",
       ]).await?;
       let json: serde_json::Value = serde_json::from_str(&text).unwrap();
       let value = json["token"].as_str().unwrap();
 
-      save(value, json["until"].as_u64().unwrap());
+      save(audience, value, json["until"].as_u64().unwrap());
 
       Ok(value.to_string())
   }
@@ -204,7 +214,8 @@ show~ у цьому випадку успішний (читає лише лок�
 повертається одразу разом із тілом відповіді: воно несе причину від =Azure=. Для ~401~, ~403~ і ~404~ до
 неї додається підказка, що робити далі (~hint~): помилка без наступного кроку змушує гадати. Вхід виконує
 лише користувач, тож у підказці до ~401~ це сказано прямо. Тіло є лише в запитів ~POST~ (=Cost
-Management=); читання мережевих ресурсів і =MySQL= — ~GET~ без тіла.
+Management=); читання мережевих ресурсів і =MySQL= — ~GET~ без тіла. Аудиторія токена (~audience~) — ~ARM~
+чи ~BLOB~; для ~BLOB~ додається й заголовок ~x-ms-version~.
 
 #+begin_src rust :noweb-ref Декларації
   use reqwest::Method;
@@ -214,7 +225,7 @@ Management=); читання мережевих ресурсів і =MySQL= — 
   fn hint(status: u16) -> &'static str {
       match status {
           401 => "Токен не прийнято. Новий вхід робить лише користувач, інтерактивно: az login --scope https://management.core.windows.net//.default (за потреби з --tenant <тенант>).",
-          403 => "Недостатньо прав на цю область: для читання потрібна роль Reader (для costs — Cost Management Reader).",
+          403 => "Недостатньо прав на цю область: для читання потрібна роль Reader (для costs — Cost Management Reader, для переліку blob-ів — Storage Blob Data Reader на обліковий запис чи контейнер).",
           404 => "Перевірте назву групи ресурсів (az group list) і підписки (az account list): неіснуюча область дає 404.",
           _ => "",
       }
@@ -227,11 +238,15 @@ Management=); читання мережевих ресурсів і =MySQL= — 
       }
   }
 
-  async fn send(http: &reqwest::Client, method: Method, url: &str, body: Option<&serde_json::Value>) -> Result<String, String> {
+  async fn send(http: &reqwest::Client, method: Method, url: &str, body: Option<&serde_json::Value>, audience: &str) -> Result<String, String> {
       let mut pauses = PAUSES.iter();
 
       loop {
-          let mut request = http.request(method.clone(), url).bearer_auth(token().await?);
+          let mut request = http.request(method.clone(), url).bearer_auth(token(audience).await?);
+
+          if audience == BLOB {
+              request = request.header("x-ms-version", VERSION);
+          }
 
           if let Some(body) = body {
               request = request.header("content-type", "application/json").body(body.to_string());
@@ -281,7 +296,7 @@ Management=); читання мережевих ресурсів і =MySQL= — 
           }
       }
 
-      let text = send(http, Method::POST, &url, Some(body)).await?;
+      let text = send(http, Method::POST, &url, Some(body), ARM).await?;
 
       std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
       std::fs::write(&cache, &text).unwrap();
@@ -303,7 +318,7 @@ Management=); читання мережевих ресурсів і =MySQL= — 
       let mut items = Vec::new();
 
       loop {
-          let body: serde_json::Value = serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap();
+          let body: serde_json::Value = serde_json::from_str(&send(http, Method::GET, &url, None, ARM).await?).unwrap();
 
           items.extend(body["value"].as_array().unwrap().iter().cloned());
 
@@ -323,7 +338,29 @@ Management=); читання мережевих ресурсів і =MySQL= — 
   pub async fn get(http: &reqwest::Client, path: &str) -> Result<serde_json::Value, String> {
       let url = format!("{}{}", ARM, path);
 
-      Ok(serde_json::from_str(&send(http, Method::GET, &url, None).await?).unwrap())
+      Ok(serde_json::from_str(&send(http, Method::GET, &url, None, ARM).await?).unwrap())
+  }
+#+end_src
+
+* Сторінка ~blob~-ів
+
+Рівень даних =Azure Storage= (~<обліковий запис>.blob.core.windows.net~) — інший хост і інша аудиторія
+токена, ніж =arm=, а відповідь — ~xml~, не ~json~. Повертає одну сторінку переліку (до 5000 ~blob~-ів) як
+текст: розбір і перехід за ~NextMarker~ робить інструмент (див. [[file:main-tool-storage.org][~main-tool-storage.org~]]). Мітка
+продовження (~marker~) кодується як параметр адреси. Ключів облікового запису тут немає ніде: лише токен
+=Azure AD=.
+
+#+begin_src rust :noweb-ref Визначення
+  pub async fn page(http: &reqwest::Client, account: &str, container: &str, marker: Option<&str>) -> Result<String, String> {
+      let mut address = Url::parse(&format!("https://{}.blob.core.windows.net/{}", account, container)).map_err(|error| format!("Некоректне ім'я облікового запису чи контейнера: {}", error))?;
+
+      address.query_pairs_mut().append_pair("restype", "container").append_pair("comp", "list").append_pair("maxresults", "5000");
+
+      if let Some(marker) = marker {
+          address.query_pairs_mut().append_pair("marker", marker);
+      }
+
+      send(http, Method::GET, address.as_str(), None, BLOB).await
   }
 #+end_src
 

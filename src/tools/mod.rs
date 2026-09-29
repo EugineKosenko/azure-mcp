@@ -16,6 +16,10 @@ mod vnets;
 mod resources;
 mod skus;
 mod support;
+mod storage;
+mod images;
+mod galleries;
+mod backup;
 
 pub fn list() -> serde_json::Value {
     serde_json::json!([
@@ -243,6 +247,60 @@ pub fn list() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "storage",
+            "description": "Облікові записи Azure Storage: ім'я, група, регіон, SKU, тип, рівень доступу, дата створення. З account — ще його контейнери (доступ, дата зміни); з container — blob-и контейнера (ім'я, розмір, тип, рівень, дата зміни) і їхній сумарний розмір; з sizes=true — кількість і розмір blob-ів у кожному контейнері (розмір облікового запису API не віддає). Лише читання: ключі облікового запису й вміст blob-ів не використовуються. Перелік blob-ів іде рівнем даних із токеном Azure AD і потребує ролі Storage Blob Data Reader; без неї Azure відповість 403. Для page blob (vhd) розмір — той, з яким його створено, а не фактично зайнятий.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "account": { "type": "string", "description": "Обліковий запис, який розгорнути (контейнери); без нього — лише перелік облікових записів" },
+                    "container": { "type": "string", "description": "Контейнер облікового запису account, blob-и якого показати" },
+                    "sizes": { "type": "boolean", "description": "Показати кількість і сумарний розмір blob-ів у кожному контейнері account (по запиту на контейнер)" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "images",
+            "description": "Класичні образи Azure (Microsoft.Compute/images): ім'я, група, регіон, тип ОС, покоління Hyper-V (V1/V2), стан ОС (Generalized/Specialized), розмір диска ОС у ГБ, дата створення, джерело (vm=, disk=, snapshot=, vhd=) і стан. Лише читання, вміст дисків не читається. Образи Azure Compute Gallery — інструмент galleries. Необов'язковий name лишає один образ.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Лише образ з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "galleries",
+            "description": "Azure Compute Gallery: галереї (група, регіон, стан), їхні образи (definitions: ОС, покоління Hyper-V, стан ОС, publisher/offer/sku) і версії образів (розмір диска ОС, дата публікації й кінця життя, виключення з latest, реплікації по регіонах з кількістю реплік і типом сховища, джерело, стан). Лише читання, вміст дисків не читається. Класичні образи Microsoft.Compute/images — інструмент images. Необов'язковий name лишає одну галерею.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Лише галерея з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "backup",
+            "description": "Azure Backup: сховища Recovery Services (група, регіон, SKU, тип зберігання LRS/GRS/ZRS, кількість захищених елементів), їхні політики (частота й час, зберігання daily/weekly/monthly/yearly, зберігання миттєвих snapshot-ів у днях, кількість елементів) і захищені елементи (ім'я, тип, політика, стан захисту, здоров'я, результат і час останнього бекапу, кількість точок відновлення). Лише читання: без операцій відновлення й зміни захисту. Розмір збережених даних і вартість на елемент не показуються (ARM не віддає їх полем; вартість — через costs). Кількість точок відновлення — окремий запит на елемент. Необов'язковий name лишає одне сховище.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Лише сховище з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -266,6 +324,10 @@ pub async fn call(http: &reqwest::Client, name: &str, arguments: &serde_json::Va
         "resources" => resources::run(http, arguments).await,
         "skus" => skus::run(http, arguments).await,
         "support" => support::run(http, arguments).await,
+        "storage" => storage::run(http, arguments).await,
+        "images" => images::run(http, arguments).await,
+        "galleries" => galleries::run(http, arguments).await,
+        "backup" => backup::run(http, arguments).await,
         _ => reply(Err(format!("Невідомий інструмент: {}", name)))
     }
 }
