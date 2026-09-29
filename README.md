@@ -3,7 +3,7 @@
 A read-only [MCP](https://modelcontextprotocol.io) server for the parts of [Microsoft Azure](https://azure.microsoft.com)
 that an assistant most often needs to look at and that the official Azure MCP server does not cover well:
 actual costs, retail storage prices, network resources, MySQL firewall rules, virtual machines, disks and
-snapshots, storage accounts, images and galleries, Azure Backup, Advisor recommendations, the subscription itself and its
+snapshots, storage accounts, images and galleries, Azure Backup, Azure Monitor metrics, Advisor recommendations, the subscription itself and its
 regional quotas. It is written in Rust as
 a literate [org-babel](https://orgmode.org/worg/org-contrib/babel/) program and talks the standard MCP
 `stdio` transport, so an LLM assistant can call it directly.
@@ -116,6 +116,13 @@ report, not a sortable list).
   state, health, last backup result and time, recovery point count). Read-only: no restore operations and no
   protection changes. Stored data size and per-item cost are not shown (ARM does not report them as a field;
   cost is available through `costs`). Optional `name` keeps one vault.
+- **metrics** — Azure Monitor metrics of a resource (VM, disk, MySQL, storage account, ...) over a period: for
+  each metric and aggregation a summary (average, maximum, minimum, interval count and, with `threshold`,
+  how many intervals are strictly above it — for CPU with `interval=PT1H` that is the number of hours above
+  the threshold) and, with `points=true`, the series of points. With `list=true` it lists the metrics the
+  resource offers. The resource is a full `resource` id or a `name` (narrowed by `group` and `type`; several
+  matches are listed instead of guessed). Read-only (`Reader` / `Monitoring Reader`); Azure keeps metrics for
+  93 days.
 
 ## Authentication
 
@@ -190,7 +197,7 @@ be allowed without a prompt: `mcp__azure-mcp__costs`, `mcp__azure-mcp__pubips`, 
 `mcp__azure-mcp__disks`, `mcp__azure-mcp__snapshots`, `mcp__azure-mcp__vnets`, `mcp__azure-mcp__resources`,
 `mcp__azure-mcp__pricing`, `mcp__azure-mcp__advisor`, `mcp__azure-mcp__account`, `mcp__azure-mcp__quota`,
 `mcp__azure-mcp__skus`, `mcp__azure-mcp__support`, `mcp__azure-mcp__storage`, `mcp__azure-mcp__images` and
-`mcp__azure-mcp__galleries` and `mcp__azure-mcp__backup` in `permissions.allow`.
+`mcp__azure-mcp__galleries` and `mcp__azure-mcp__backup` and `mcp__azure-mcp__metrics` in `permissions.allow`.
 
 ## License
 

@@ -20,6 +20,7 @@ mod storage;
 mod images;
 mod galleries;
 mod backup;
+mod metrics;
 
 pub fn list() -> serde_json::Value {
     serde_json::json!([
@@ -301,6 +302,28 @@ pub fn list() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "metrics",
+            "description": "Метрики Azure Monitor ресурсу (VM, диска, MySQL, сховища тощо) за період: для кожної метрики й агрегації підсумок (avg, max, min, кількість інтервалів і, з threshold, скільки інтервалів строго понад поріг — для CPU з interval=PT1H це години над порогом) і, з points=true, ряд точок. З list=true — перелік метрик ресурсу (їхні назви для metric). Ресурс — повний ідентифікатор resource або ім'я name (з group і type); якщо імен кілька, повертається їх перелік. Лише читання (Reader / Monitoring Reader). Azure віддає метрики не глибше 93 діб; надто довгий період із дрібним interval відхиляє помилкою. Метрики гостьової ОС (пам'ять старих VM) доступні лише з агентом.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource": { "type": "string", "description": "Повний ідентифікатор ресурсу Azure (/subscriptions/.../providers/...)" },
+                    "name": { "type": "string", "description": "Ім'я ресурсу, якщо resource не задано" },
+                    "type": { "type": "string", "description": "Повний тип ресурсу для пошуку за name, напр. Microsoft.Compute/virtualMachines (ім'я VM часто збігається з іменем ключа SSH)" },
+                    "list": { "type": "boolean", "description": "Показати перелік доступних метрик ресурсу замість значень" },
+                    "metric": { "type": "string", "description": "Ім'я метрики (кілька через кому), напр. Percentage CPU; для MySQL cpu_percent" },
+                    "timespan": { "type": "string", "description": "Скільки часу назад від зараз: число й m/h/d, напр. 7d, 24h; за замовчуванням 24h" },
+                    "interval": { "type": "string", "description": "Інтервал точок ISO 8601: PT5M, PT1H, P1D; за замовчуванням PT1H" },
+                    "aggregation": { "type": "string", "description": "Агрегація: Average, Maximum, Minimum, Total, Count (кілька через кому); за замовчуванням Average" },
+                    "threshold": { "type": "number", "description": "Рахувати інтервали, значення яких строго більше цього числа" },
+                    "points": { "type": "boolean", "description": "Додати ряд точок (час і значення)" },
+                    "group": { "type": "string", "description": "Група ресурсів для пошуку за name; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -328,6 +351,7 @@ pub async fn call(http: &reqwest::Client, name: &str, arguments: &serde_json::Va
         "images" => images::run(http, arguments).await,
         "galleries" => galleries::run(http, arguments).await,
         "backup" => backup::run(http, arguments).await,
+        "metrics" => metrics::run(http, arguments).await,
         _ => reply(Err(format!("Невідомий інструмент: {}", name)))
     }
 }
