@@ -1,9 +1,9 @@
 #+title: Інструмент ~vms~
 
 Повертає віртуальні машини: ім'я, група, регіон, розмір, ОС, стан живлення, приватні та публічні IP,
-безпека завантаження (~securityType~, ~secureBoot~, ~vTpm~). Офіційний
-=Azure MCP= цього нормально не дає, а ~az vm list -d~ робить окремий виклик на кожну VM (для 17 машин —
-понад 50 запитів). Тут вистачає чотирьох переліків по області:
+безпека завантаження (~securityType~, ~secureBoot~, ~vTpm~). Офіційний =Azure MCP= цього нормально не
+дає, а ~az vm list -d~ робить окремий виклик на кожну VM (для 17 машин — понад 50 запитів). Тут вистачає
+чотирьох переліків по області:
 
 - VM (~GET .../providers/Microsoft.Compute/virtualMachines~, ~api-version=2024-11-01~): розмір, ОС, NIC;
 - ті самі VM зі ~statusOnly=true~ (та сама версія): у відповіді лише ~instanceView.statuses~, з них
@@ -70,6 +70,36 @@
   }
 #+end_src
 
+* Диски даних
+
+Підключення дисків даних — ~storageProfile/dataDisks~ у самій VM: ~lun~ (номер пристрою), ~name~,
+~caching~ (~None~ / ~ReadOnly~ / ~ReadWrite~), ~writeAcceleratorEnabled~ (~wa~) і ~deleteOption~
+(~Detach~ / ~Delete~: що станеться з диском під час видалення VM). Формат одного диска —
+~lun0:<ім'я>(caching=…,wa=…,delete=…)~, кілька через кому, ~-~ коли дисків даних немає. Параметри самого
+диска (зони, рівень, IOPS) — в [[file:main-tool-disks.org][~disks~]].
+
+#+begin_src rust :noweb-ref Визначення
+  fn datadisks(vm: &serde_json::Value) -> String {
+      let items: Vec<String> = vm["properties"]["storageProfile"]["dataDisks"]
+          .as_array()
+          .into_iter()
+          .flatten()
+          .map(|disk| {
+              format!(
+                  "lun{}:{}(caching={},wa={},delete={})",
+                  tools::shown(disk, "/lun"),
+                  tools::text(disk, "/name"),
+                  tools::text(disk, "/caching"),
+                  tools::shown(disk, "/writeAcceleratorEnabled"),
+                  tools::text(disk, "/deleteOption"),
+              )
+          })
+          .collect();
+
+      if items.is_empty() { "-".to_string() } else { items.join(",") }
+  }
+#+end_src
+
 * Адреси
 
 Приватні адреси беремо з IP-конфігурацій усіх NIC машини, публічні — з тих конфігурацій, до яких
@@ -107,12 +137,12 @@
 
 Рядок: ім'я, група, регіон, розмір, ОС, стан, приватні й публічні адреси, безпека завантаження, дата
 створення (~timeCreated~, у кінці рядка — нове поле в наявному інструменті йде туди, а не всередину, щоб
-не ламати позиційний розбір споживачів). Групу
-виводимо малими літерами, як у ~costs~: імена груп в =Azure= нечутливі до регістру, а перелік VM повертає
-їх у верхньому. Фільтр ~name~ не залежить від регістру. Регіон беремо окремо від групи: назва групи
-ресурсів (напр. ~prod-eastus~) підказує регіон лише за конвенцією проєкту, а не гарантовано — VM може
-фізично лежати в іншому. ~securityType~ (~TrustedLaunch~ тощо) є не в кожної VM (старі чи ~Standard~ без
-довіреного завантаження); тоді й ~secureBootEnabled~ / ~vTpmEnabled~ відсутні — все разом дає ~-~.
+не ламати позиційний розбір споживачів). Групу виводимо малими літерами, як у ~costs~: імена груп в
+=Azure= нечутливі до регістру, а перелік VM повертає їх у верхньому. Фільтр ~name~ не залежить від
+регістру. Регіон беремо окремо від групи: назва групи ресурсів (напр. ~prod-eastus~) підказує регіон лише
+за конвенцією проєкту, а не гарантовано — VM може фізично лежати в іншому. ~securityType~
+(~TrustedLaunch~ тощо) є не в кожної VM (старі чи ~Standard~ без довіреного завантаження); тоді й
+~secureBootEnabled~ / ~vTpmEnabled~ відсутні — все разом дає ~-~.
 
 #+begin_src rust :noweb-ref Визначення
   fn security(vm: &serde_json::Value) -> String {
@@ -144,7 +174,7 @@
               let (private, public) = addresses(vm, &nics, &ips);
 
               format!(
-                  "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}",
+                  "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}  datadisks={}",
                   tools::text(vm, "/name"),
                   tools::part(tools::text(vm, "/id"), "resourceGroups").to_lowercase(),
                   tools::text(vm, "/location"),
@@ -155,6 +185,7 @@
                   public,
                   security(vm),
                   tools::text(vm, "/properties/timeCreated"),
+                  datadisks(vm),
               )
           })
           .collect();
@@ -166,15 +197,23 @@
 * Дія
 
 VM беремо в межах ~group~ (якщо задано), а NIC і публічні IP — по всій підписці: NIC машини може лежати в
-іншій групі. Помилка будь-якого з чотирьох викликів зупиняє інструмент і повертається текстом.
+іншій групі. Стан живлення (~statusOnly=true~) завжди читаємо на рівні *підписки*: на шляху групи
+ресурсів =Azure= мовчки ігнорує цей параметр і повертає звичайний перелік VM без ~instanceView~, тому з
+~group~ стан був порожнім (знайдено 2026-10-01); до VM стан приєднується за
+ідентифікатором. ~status_path~ формує адресу. Помилка будь-якого з чотирьох викликів зупиняє інструмент і
+повертається текстом.
 
 #+begin_src rust :noweb-ref Визначення
+  fn status_path(subscription: &str) -> String {
+      format!("{}/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01", subscription)
+  }
+
   async fn gather(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
       let scope = tools::scope(arguments).await?;
       let subscription = tools::subscription(arguments).await?;
 
       let vms = client::list(http, &format!("{}/providers/Microsoft.Compute/virtualMachines?api-version=2024-11-01", scope)).await?;
-      let status = client::list(http, &format!("{}/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01", scope)).await?;
+      let status = client::list(http, &status_path(&subscription)).await?;
       let nics = client::list(http, &format!("{}/providers/Microsoft.Network/networkInterfaces?api-version=2023-11-01", subscription)).await?;
       let ips = client::list(http, &format!("{}/providers/Microsoft.Network/publicIPAddresses?api-version=2024-07-01", subscription)).await?;
 
@@ -200,7 +239,10 @@ NIC у переліку.
               "location": "eastus",
               "properties": {
                   "hardwareProfile": { "vmSize": "Standard_B1ms" },
-                  "storageProfile": { "osDisk": { "osType": "Linux" } },
+                  "storageProfile": {
+                      "osDisk": { "osType": "Linux" },
+                      "dataDisks": [{ "lun": 0, "name": "web-data", "caching": "ReadOnly", "writeAcceleratorEnabled": false, "deleteOption": "Detach" }],
+                  },
                   "networkProfile": { "networkInterfaces": [{ "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/nic1" }] },
                   "securityProfile": { "securityType": "TrustedLaunch", "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true } },
                   "timeCreated": "2026-09-20T07:06:17.5125651+00:00",
@@ -255,8 +297,16 @@ NIC у переліку.
   fn table_joins_status_and_addresses() {
       assert_eq!(
           table(&vms(), &status(), &nics(), &ips(), None),
-          "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00\n\
-           win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-"
+          "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00  datadisks=lun0:web-data(caching=ReadOnly,wa=false,delete=Detach)\n\
+           win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-  datadisks=-"
+      );
+  }
+
+  #[test]
+  fn status_is_read_at_subscription_scope() {
+      assert_eq!(
+          status_path("/subscriptions/s"),
+          "/subscriptions/s/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01"
       );
   }
 
@@ -271,7 +321,7 @@ NIC у переліку.
       assert_eq!(power(None), "-");
       assert_eq!(
           table(&vms(), &[], &nics(), &ips(), Some("win-server")),
-          "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-"
+          "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-  datadisks=-"
       );
   }
 

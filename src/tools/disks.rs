@@ -1,11 +1,17 @@
 use crate::client;
 use crate::tools;
 
+fn zones(disk: &serde_json::Value) -> String {
+    let items: Vec<&str> = disk["zones"].as_array().into_iter().flatten().filter_map(|zone| zone.as_str()).collect();
+
+    if items.is_empty() { "-".to_string() } else { items.join(",") }
+}
+
 fn line(disk: &serde_json::Value) -> String {
     let state = tools::text(disk, "/properties/diskState");
 
     format!(
-        "{}  {}  {}  {} ГБ  {}  {}  {}  vm={}{}",
+        "{}  {}  {}  {} ГБ  {}  {}  {}  vm={}  zones={}  tier={}  iops={}  mbps={}  bursting={}{}",
         tools::text(disk, "/name"),
         tools::part(tools::text(disk, "/id"), "resourceGroups").to_lowercase(),
         tools::text(disk, "/sku/name"),
@@ -14,6 +20,11 @@ fn line(disk: &serde_json::Value) -> String {
         tools::text(disk, "/properties/securityProfile/securityType"),
         state,
         tools::last(tools::text(disk, "/managedBy")),
+        zones(disk),
+        tools::text(disk, "/properties/tier"),
+        tools::shown(disk, "/properties/diskIOPSReadWrite"),
+        tools::shown(disk, "/properties/diskMBpsReadWrite"),
+        tools::shown(disk, "/properties/burstingEnabled"),
         if state == "Unattached" { "  (не прив'язаний)" } else { "" },
     )
 }
@@ -49,7 +60,8 @@ mod tests {
                 "id": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/disks/win-server_osdisk_1",
                 "sku": { "name": "Premium_LRS" },
                 "managedBy": "/subscriptions/s/resourceGroups/TRIAL/providers/Microsoft.Compute/virtualMachines/win-server",
-                "properties": { "diskSizeGB": 127, "diskState": "Attached", "hyperVGeneration": "V2", "securityProfile": { "securityType": "TrustedLaunch" } },
+                "zones": ["1"],
+                "properties": { "diskSizeGB": 127, "diskState": "Attached", "hyperVGeneration": "V2", "securityProfile": { "securityType": "TrustedLaunch" }, "tier": "P10", "diskIOPSReadWrite": 500, "diskMBpsReadWrite": 100, "burstingEnabled": true },
             }),
             serde_json::json!({
                 "name": "old-data",
@@ -64,8 +76,8 @@ mod tests {
     fn table_marks_unattached() {
         assert_eq!(
             table(&disks(), None),
-            "old-data  demo-rg  Standard_LRS  32 ГБ  -  -  Unattached  vm=-  (не прив'язаний)\n\
-             win-server_osdisk_1  trial  Premium_LRS  127 ГБ  V2  TrustedLaunch  Attached  vm=win-server"
+            "old-data  demo-rg  Standard_LRS  32 ГБ  -  -  Unattached  vm=-  zones=-  tier=-  iops=-  mbps=-  bursting=-  (не прив'язаний)\n\
+             win-server_osdisk_1  trial  Premium_LRS  127 ГБ  V2  TrustedLaunch  Attached  vm=win-server  zones=1  tier=P10  iops=500  mbps=100  bursting=true"
         );
     }
     

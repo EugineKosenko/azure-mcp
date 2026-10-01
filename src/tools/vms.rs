@@ -16,6 +16,25 @@ fn power(status: Option<&&serde_json::Value>) -> String {
         .unwrap_or("-")
         .to_string()
 }
+fn datadisks(vm: &serde_json::Value) -> String {
+    let items: Vec<String> = vm["properties"]["storageProfile"]["dataDisks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|disk| {
+            format!(
+                "lun{}:{}(caching={},wa={},delete={})",
+                tools::shown(disk, "/lun"),
+                tools::text(disk, "/name"),
+                tools::text(disk, "/caching"),
+                tools::shown(disk, "/writeAcceleratorEnabled"),
+                tools::text(disk, "/deleteOption"),
+            )
+        })
+        .collect();
+
+    if items.is_empty() { "-".to_string() } else { items.join(",") }
+}
 fn joined(items: Vec<&str>) -> String {
     if items.is_empty() { "-".to_string() } else { items.join(",") }
 }
@@ -70,7 +89,7 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
             let (private, public) = addresses(vm, &nics, &ips);
 
             format!(
-                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}",
+                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}  datadisks={}",
                 tools::text(vm, "/name"),
                 tools::part(tools::text(vm, "/id"), "resourceGroups").to_lowercase(),
                 tools::text(vm, "/location"),
@@ -81,18 +100,23 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
                 public,
                 security(vm),
                 tools::text(vm, "/properties/timeCreated"),
+                datadisks(vm),
             )
         })
         .collect();
 
     if lines.is_empty() { "Віртуальних машин не знайдено.".to_string() } else { lines.join("\n") }
 }
+fn status_path(subscription: &str) -> String {
+    format!("{}/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01", subscription)
+}
+
 async fn gather(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
     let scope = tools::scope(arguments).await?;
     let subscription = tools::subscription(arguments).await?;
 
     let vms = client::list(http, &format!("{}/providers/Microsoft.Compute/virtualMachines?api-version=2024-11-01", scope)).await?;
-    let status = client::list(http, &format!("{}/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01", scope)).await?;
+    let status = client::list(http, &status_path(&subscription)).await?;
     let nics = client::list(http, &format!("{}/providers/Microsoft.Network/networkInterfaces?api-version=2023-11-01", subscription)).await?;
     let ips = client::list(http, &format!("{}/providers/Microsoft.Network/publicIPAddresses?api-version=2024-07-01", subscription)).await?;
 
@@ -115,7 +139,10 @@ mod tests {
                 "location": "eastus",
                 "properties": {
                     "hardwareProfile": { "vmSize": "Standard_B1ms" },
-                    "storageProfile": { "osDisk": { "osType": "Linux" } },
+                    "storageProfile": {
+                        "osDisk": { "osType": "Linux" },
+                        "dataDisks": [{ "lun": 0, "name": "web-data", "caching": "ReadOnly", "writeAcceleratorEnabled": false, "deleteOption": "Detach" }],
+                    },
                     "networkProfile": { "networkInterfaces": [{ "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/nic1" }] },
                     "securityProfile": { "securityType": "TrustedLaunch", "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true } },
                     "timeCreated": "2026-09-20T07:06:17.5125651+00:00",
@@ -170,8 +197,16 @@ mod tests {
     fn table_joins_status_and_addresses() {
         assert_eq!(
             table(&vms(), &status(), &nics(), &ips(), None),
-            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00\n\
-             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-"
+            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00  datadisks=lun0:web-data(caching=ReadOnly,wa=false,delete=Detach)\n\
+             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-  datadisks=-"
+        );
+    }
+    
+    #[test]
+    fn status_is_read_at_subscription_scope() {
+        assert_eq!(
+            status_path("/subscriptions/s"),
+            "/subscriptions/s/providers/Microsoft.Compute/virtualMachines?statusOnly=true&api-version=2024-11-01"
         );
     }
     
@@ -186,7 +221,7 @@ mod tests {
         assert_eq!(power(None), "-");
         assert_eq!(
             table(&vms(), &[], &nics(), &ips(), Some("win-server")),
-            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-"
+            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-  datadisks=-"
         );
     }
     

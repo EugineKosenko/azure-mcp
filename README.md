@@ -59,9 +59,11 @@ report, not a sortable list).
   no rules says what that means.
 - **dnszones** — private DNS zones: virtual network links and A records.
 - **vms** — virtual machines: region, size, OS, power state, private and public IPs, boot security
-  (`securityType`, e.g. `TrustedLaunch`, with `secureBoot` / `vTpm` flags when set) and creation time.
+  (`securityType`, e.g. `TrustedLaunch`, with `secureBoot` / `vTpm` flags when set) and creation time, and the data disks attached
+  (`lun`, name, caching, write accelerator, delete option).
 - **disks** — managed disks: SKU, size, generation (`hyperVGeneration`), security type, state and the VM they
-  belong to. Unattached disks are marked — they are still billed. Generation and security type matter when
+  belong to, plus zones, performance tier, provisioned IOPS and throughput and the bursting flag. Unattached
+  disks are marked — they are still billed. Generation and security type matter when
   reusing a disk (e.g. building an image from a snapshot): an unsupported combination is a common reason
   `az disk create --source` / `az image create` fails.
 - **snapshots** — disk snapshots: SKU, size, generation, security type, OS, the source disk and whether the
