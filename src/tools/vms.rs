@@ -35,6 +35,63 @@ fn datadisks(vm: &serde_json::Value) -> String {
 
     if items.is_empty() { "-".to_string() } else { items.join(",") }
 }
+fn image(vm: &serde_json::Value) -> String {
+    let base = "/properties/storageProfile/imageReference";
+    let publisher = tools::text(vm, &format!("{}/publisher", base));
+
+    if publisher != "-" {
+        let version = tools::text(vm, &format!("{}/version", base));
+        let exact = tools::text(vm, &format!("{}/exactVersion", base));
+
+        return format!(
+            "{}/{}/{}/{}{}",
+            publisher,
+            tools::text(vm, &format!("{}/offer", base)),
+            tools::text(vm, &format!("{}/sku", base)),
+            version,
+            if exact != "-" && exact != version { format!("({})", exact) } else { String::new() },
+        );
+    }
+
+    let id = ["id", "sharedGalleryImageId", "communityGalleryImageId"]
+        .iter()
+        .map(|key| tools::text(vm, &format!("{}/{}", base, key)))
+        .find(|id| *id != "-");
+
+    match id {
+        Some(id) if id.contains("/versions/") => {
+            let mut parts = id.rsplit('/');
+            let version = parts.next().unwrap();
+
+            parts.next();
+            format!("gallery:{}/{}", parts.next().unwrap(), version)
+        }
+        Some(id) => format!("custom:{}", tools::last(id)),
+        None => "-".to_string(),
+    }
+}
+
+fn agent(vm: &serde_json::Value) -> String {
+    let linux = tools::shown(vm, "/properties/osProfile/linuxConfiguration/provisionVMAgent");
+
+    if linux != "-" { linux } else { tools::shown(vm, "/properties/osProfile/windowsConfiguration/provisionVMAgent") }
+}
+
+fn osdisk(vm: &serde_json::Value) -> String {
+    let base = "/properties/storageProfile/osDisk";
+    let secure = tools::text(vm, &format!("{}/managedDisk/securityProfile/securityEncryptionType", base));
+
+    format!(
+        "{}(os={},create={},caching={},size={},delete={}{})",
+        tools::text(vm, &format!("{}/name", base)),
+        tools::text(vm, &format!("{}/osType", base)),
+        tools::text(vm, &format!("{}/createOption", base)),
+        tools::text(vm, &format!("{}/caching", base)),
+        tools::shown(vm, &format!("{}/diskSizeGB", base)),
+        tools::text(vm, &format!("{}/deleteOption", base)),
+        if secure == "-" { String::new() } else { format!(",sec={}", secure) },
+    )
+}
 fn joined(items: Vec<&str>) -> String {
     if items.is_empty() { "-".to_string() } else { items.join(",") }
 }
@@ -89,7 +146,7 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
             let (private, public) = addresses(vm, &nics, &ips);
 
             format!(
-                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}  datadisks={}",
+                "{}  {}  {}  {}  {}  {}  private={}  public={}  security={}  created={}  datadisks={}  image={}  agent={}  osdisk={}",
                 tools::text(vm, "/name"),
                 tools::part(tools::text(vm, "/id"), "resourceGroups").to_lowercase(),
                 tools::text(vm, "/location"),
@@ -101,6 +158,9 @@ fn table(vms: &[serde_json::Value], status: &[serde_json::Value], nics: &[serde_
                 security(vm),
                 tools::text(vm, "/properties/timeCreated"),
                 datadisks(vm),
+                image(vm),
+                agent(vm),
+                osdisk(vm),
             )
         })
         .collect();
@@ -139,8 +199,10 @@ mod tests {
                 "location": "eastus",
                 "properties": {
                     "hardwareProfile": { "vmSize": "Standard_B1ms" },
+                    "osProfile": { "linuxConfiguration": { "provisionVMAgent": true } },
                     "storageProfile": {
-                        "osDisk": { "osType": "Linux" },
+                        "imageReference": { "publisher": "debian", "offer": "debian-12", "sku": "12-gen2", "version": "latest", "exactVersion": "0.20240901.1" },
+                        "osDisk": { "name": "api-vm_osdisk", "osType": "Linux", "createOption": "FromImage", "caching": "ReadWrite", "diskSizeGB": 30, "deleteOption": "Detach", "managedDisk": { "securityProfile": { "securityEncryptionType": "VMGuestStateOnly" } } },
                         "dataDisks": [{ "lun": 0, "name": "web-data", "caching": "ReadOnly", "writeAcceleratorEnabled": false, "deleteOption": "Detach" }],
                     },
                     "networkProfile": { "networkInterfaces": [{ "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Network/networkInterfaces/nic1" }] },
@@ -197,9 +259,20 @@ mod tests {
     fn table_joins_status_and_addresses() {
         assert_eq!(
             table(&vms(), &status(), &nics(), &ips(), None),
-            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00  datadisks=lun0:web-data(caching=ReadOnly,wa=false,delete=Detach)\n\
-             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-  datadisks=-"
+            "api-vm  demo-rg  eastus  Standard_B1ms  Linux  running  private=10.0.0.5  public=203.0.113.40  security=TrustedLaunch(secureBoot,vTpm)  created=2026-09-20T07:06:17.5125651+00:00  datadisks=lun0:web-data(caching=ReadOnly,wa=false,delete=Detach)  image=debian/debian-12/12-gen2/latest(0.20240901.1)  agent=true  osdisk=api-vm_osdisk(os=Linux,create=FromImage,caching=ReadWrite,size=30,delete=Detach,sec=VMGuestStateOnly)\n\
+             win-server  trial  westus3  Standard_D2s_v3  Windows  deallocated  private=-  public=-  security=-  created=-  datadisks=-  image=-  agent=-  osdisk=-(os=Windows,create=-,caching=-,size=-,delete=-)"
         );
+    }
+    
+    #[test]
+    fn image_forms() {
+        let custom = serde_json::json!({ "properties": { "storageProfile": { "imageReference": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/images/web-image" } } } });
+        let shared = serde_json::json!({ "properties": { "storageProfile": { "imageReference": { "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.Compute/galleries/g/images/web/versions/1.0.0" } } } });
+    
+        assert_eq!(image(&custom), "custom:web-image");
+        assert_eq!(image(&shared), "gallery:web/1.0.0");
+        assert_eq!(image(&serde_json::json!({})), "-");
+        assert_eq!(agent(&serde_json::json!({ "properties": { "osProfile": { "windowsConfiguration": { "provisionVMAgent": false } } } })), "false");
     }
     
     #[test]
@@ -221,7 +294,7 @@ mod tests {
         assert_eq!(power(None), "-");
         assert_eq!(
             table(&vms(), &[], &nics(), &ips(), Some("win-server")),
-            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-  datadisks=-"
+            "win-server  trial  westus3  Standard_D2s_v3  Windows  -  private=-  public=-  security=-  created=-  datadisks=-  image=-  agent=-  osdisk=-(os=Windows,create=-,caching=-,size=-,delete=-)"
         );
     }
     
