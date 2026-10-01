@@ -89,6 +89,45 @@ fn item(entry: &serde_json::Value, points: usize) -> String {
         points,
     )
 }
+fn point(entry: &serde_json::Value) -> String {
+    let tiers: Vec<&str> = entry
+        .pointer("/properties/recoveryPointTierDetails")
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .map(|tier| tools::text(tier, "/type"))
+        .collect();
+
+    format!(
+        "  {}  {}  {}  tier={}",
+        tools::text(entry, "/name"),
+        tools::text(entry, "/properties/recoveryPointTime").chars().take(19).collect::<String>(),
+        tools::text(entry, "/properties/recoveryPointType"),
+        if tiers.is_empty() { "-".to_string() } else { tiers.join(",") },
+    )
+}
+
+async fn points(http: &reqwest::Client, one: &serde_json::Value, item: &str) -> Result<Option<String>, String> {
+    let id = tools::text(one, "/id");
+    let entries = client::list(http, &format!("{}/backupProtectedItems?{}", id, VERSION)).await?;
+    let found: Vec<&serde_json::Value> = entries.iter().filter(|entry| tools::same(tools::text(entry, "/properties/friendlyName"), item)).collect();
+
+    if found.is_empty() {
+        return Ok(None);
+    }
+
+    let mut lines = Vec::new();
+
+    for entry in found {
+        let mut all = client::list(http, &format!("{}/recoveryPoints?{}", tools::text(entry, "/id"), VERSION)).await?;
+
+        all.sort_by_key(|entry| std::cmp::Reverse(tools::text(entry, "/properties/recoveryPointTime").to_string()));
+        lines.push(format!("{}  {}  points={}", tools::text(one, "/name"), tools::text(entry, "/properties/friendlyName"), all.len()));
+        lines.extend(all.iter().map(point));
+    }
+
+    Ok(Some(lines.join("\n")))
+}
 async fn tree(http: &reqwest::Client, one: &serde_json::Value) -> Result<String, String> {
     let id = tools::text(one, "/id");
     let config = client::get(http, &format!("{}/backupstorageconfig/vaultstorageconfig?{}", id, VERSION)).await?;
@@ -113,6 +152,10 @@ async fn tree(http: &reqwest::Client, one: &serde_json::Value) -> Result<String,
 }
 
 pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+    if let Err(message) = tools::unknown(arguments, &["name", "item", "group", "sbscrptn"]) {
+        return tools::reply(Err(message));
+    }
+    
     let scope = match tools::scope(arguments).await {
         Ok(scope) => scope,
         Err(message) => return tools::reply(Err(message)),
@@ -126,13 +169,25 @@ pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde
     let mut blocks = Vec::new();
     
     for one in tools::sorted(&vaults).into_iter().filter(|one| name.is_none_or(|name| tools::same(tools::text(one, "/name"), name))) {
-        match tree(http, one).await {
-            Ok(block) => blocks.push(block),
-            Err(message) => return tools::reply(Err(message)),
+        let block = match arguments["item"].as_str() {
+            Some(item) => points(http, one, item).await.transpose(),
+            None => Some(tree(http, one).await),
+        };
+    
+        match block {
+            Some(Ok(block)) => blocks.push(block),
+            Some(Err(message)) => return tools::reply(Err(message)),
+            None => {}
         }
     }
     
-    tools::reply(Ok(if blocks.is_empty() { "Сховищ не знайдено.".to_string() } else { blocks.join("\n\n") }))
+    tools::reply(Ok(if !blocks.is_empty() {
+        blocks.join("\n\n")
+    } else if arguments["item"].is_string() {
+        "Елемента з таким іменем не знайдено (перевірте name сховища й item).".to_string()
+    } else {
+        "Сховищ не знайдено.".to_string()
+    }))
 }
 
 #[cfg(test)]
@@ -196,6 +251,21 @@ mod tests {
             item(&entry, 12),
             "  item web-vm  Microsoft.Compute/virtualMachines  policy=DailyPolicy  protection=Protected  health=Passed  last=Completed 2026-09-28T03:01  points=12"
         );
+    }
+    
+    #[test]
+    fn point_shows_id_type_and_tiers() {
+        let entry = serde_json::json!({
+            "name": "1234567890",
+            "properties": {
+                "recoveryPointTime": "2026-09-29T08:40:12.1234567Z",
+                "recoveryPointType": "AppConsistent",
+                "recoveryPointTierDetails": [{ "type": "InstantRP", "status": "Valid" }, { "type": "HardenedRP", "status": "Valid" }],
+            },
+        });
+    
+        assert_eq!(point(&entry), "  1234567890  2026-09-29T08:40:12  AppConsistent  tier=InstantRP,HardenedRP");
+        assert_eq!(point(&serde_json::json!({})), "  -  -  -  tier=-");
     }
     
     #[test]

@@ -109,6 +109,25 @@
   }
 #+end_src
 
+* Невідомі аргументи
+
+=Azure=-інструменти за схемою мають ~additionalProperties: false~, але сервер сам схему не перевіряє, тож
+помилково названий аргумент (напр. ~hours~ замість ~timespan~) мовчки ігнорувався, і відповідь
+приходила за значеннями за замовчуванням. Інструменти, де це вже стало проблемою (~backup~, ~skus~,
+~metrics~), викликають ~unknown~ першою дією: невідомий аргумент — помилка з переліком підтримуваних.
+
+#+begin_src rust :noweb-ref Визначення
+  pub fn unknown(arguments: &serde_json::Value, known: &[&str]) -> Result<(), String> {
+      let extra: Vec<&str> = arguments.as_object().into_iter().flat_map(|map| map.keys()).map(String::as_str).filter(|key| !known.contains(key)).collect();
+
+      if extra.is_empty() {
+          Ok(())
+      } else {
+          Err(format!("Невідомі аргументи: {}. Підтримувані: {}.", extra.join(", "), known.join(", ")))
+      }
+  }
+#+end_src
+
 * Порядок у переліку
 
 =Azure= віддає ресурси в порядку, який може змінюватися між викликами, тож два виклики поспіль дають
@@ -544,12 +563,13 @@
 #+begin_src rust :noweb-sep ",\n" :noweb-ref Tools:Опис
   {
       "name": "skus",
-      "description": "Типи VM регіону: family (звірити з quota), vCPU, RAM — з каталогу Microsoft.Compute/skus. Заміна az vm list-skus --location --size (сама ця команда az ресурсоємна: ставить розширення, запускає окремий python-процес). Необов'язковий size лишає один тип; без нього — увесь каталог регіону (кілька сотень рядків).",
+      "description": "Типи VM регіону: family (звірити з quota), vCPU, RAM і в кінці рядка можливості, що вирішують продуктивність дисків (uncachedIOPS, uncachedMiBs, cachedGiB, maxDataDisks, hyperV, premiumIO, nvmeMiB, diskCtl) — з каталогу Microsoft.Compute/skus. Заміна az vm list-skus --location --size (сама ця команда az ресурсоємна: ставить розширення, запускає окремий python-процес). Необов'язковий size лишає один тип, family — родини за частиною назви (без фільтра — увесь каталог регіону, ~100 тис. символів).",
       "inputSchema": {
           "type": "object",
           "properties": {
               "region": { "type": "string", "description": "Код регіону Azure, напр. eastus" },
               "size": { "type": "string", "description": "Лише цей тип VM, напр. Standard_D4als_v6" },
+              "family": { "type": "string", "description": "Лише родини, назва яких містить цей текст (без огляду на регістр), напр. Dalv6 чи basv2" },
               "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
           },
           "required": ["region"],
@@ -683,11 +703,12 @@
 #+begin_src rust :noweb-sep ",\n" :noweb-ref Tools:Опис
   {
       "name": "backup",
-      "description": "Azure Backup: сховища Recovery Services (група, регіон, SKU, тип зберігання LRS/GRS/ZRS, кількість захищених елементів), їхні політики (частота й час, зберігання daily/weekly/monthly/yearly, зберігання миттєвих snapshot-ів у днях, кількість елементів) і захищені елементи (ім'я, тип, політика, стан захисту, здоров'я, результат і час останнього бекапу, кількість точок відновлення). Лише читання: без операцій відновлення й зміни захисту. Розмір збережених даних і вартість на елемент не показуються (ARM не віддає їх полем; вартість — через costs). Кількість точок відновлення — окремий запит на елемент. Необов'язковий name лишає одне сховище.",
+      "description": "Azure Backup: сховища Recovery Services (група, регіон, SKU, тип зберігання LRS/GRS/ZRS, кількість захищених елементів), їхні політики (частота й час, зберігання daily/weekly/monthly/yearly, зберігання миттєвих snapshot-ів у днях, кількість елементів) і захищені елементи (ім'я, тип, політика, стан захисту, здоров'я, результат і час останнього бекапу, кількість точок відновлення). Лише читання: без операцій відновлення й зміни захисту. Розмір збережених даних і вартість на елемент не показуються (ARM не віддає їх полем; вартість — через costs). Кількість точок відновлення — окремий запит на елемент. Необов'язковий name лишає одне сховище; з item замість огляду повертається перелік точок відновлення цього елемента (id точки для az backup restore, час, тип узгодженості, рівень InstantRP/HardenedRP).",
       "inputSchema": {
           "type": "object",
           "properties": {
               "name": { "type": "string", "description": "Лише сховище з цим іменем" },
+              "item": { "type": "string", "description": "Ім'я захищеного елемента (напр. VM): замість огляду показати його точки відновлення (id, час, тип, рівень); разом із name — у конкретному сховищі" },
               "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
               "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
           },
@@ -720,7 +741,9 @@
               "type": { "type": "string", "description": "Повний тип ресурсу для пошуку за name, напр. Microsoft.Compute/virtualMachines (ім'я VM часто збігається з іменем ключа SSH)" },
               "list": { "type": "boolean", "description": "Показати перелік доступних метрик ресурсу замість значень" },
               "metric": { "type": "string", "description": "Ім'я метрики (кілька через кому), напр. Percentage CPU; для MySQL cpu_percent" },
-              "timespan": { "type": "string", "description": "Скільки часу назад від зараз: число й m/h/d, напр. 7d, 24h; за замовчуванням 24h" },
+              "timespan": { "type": "string", "description": "Скільки часу назад від зараз: число й m/h/d, напр. 7d, 24h, 30m; за замовчуванням 24h (аргументу hours немає)" },
+              "start": { "type": "string", "description": "Початок довільного діапазону, ISO 8601 UTC, напр. 2026-09-30T10:00:00Z (перекриває timespan)" },
+              "end": { "type": "string", "description": "Кінець діапазону (разом зі start); без нього — зараз" },
               "interval": { "type": "string", "description": "Інтервал точок ISO 8601: PT5M, PT1H, P1D; за замовчуванням PT1H" },
               "aggregation": { "type": "string", "description": "Агрегація: Average, Maximum, Minimum, Total, Count (кілька через кому); за замовчуванням Average" },
               "threshold": { "type": "number", "description": "Рахувати інтервали, значення яких строго більше цього числа" },
@@ -775,6 +798,16 @@
       let names: Vec<&str> = sorted(&items).iter().map(|item| text(item, "/name")).collect();
 
       assert_eq!(names, vec!["a", "Z", "b"]);
+  }
+
+  #[test]
+  fn unknown_lists_extra_arguments() {
+      assert!(unknown(&serde_json::json!({ "name": "a" }), &["name", "group"]).is_ok());
+      assert!(unknown(&serde_json::Value::Null, &["name"]).is_ok());
+      assert_eq!(
+          unknown(&serde_json::json!({ "hours": 1 }), &["name", "group"]),
+          Err("Невідомі аргументи: hours. Підтримувані: name, group.".to_string())
+      );
   }
 
   #[test]

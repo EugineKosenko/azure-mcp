@@ -92,8 +92,10 @@ report, not a sortable list).
 - **skus** — VM sizes available in a region: family (matches the family names `quota` reports), vCPU count
   and memory. Calls `Microsoft.Compute/skus` directly; `az vm list-skus` itself turned out to be
   resource-heavy (it installs and runs a CLI extension), which a plain REST call avoids. `region` is
-  required; optional `size` keeps one VM size, otherwise the whole regional catalog is returned (a few
-  hundred lines).
+  required; optional `size` keeps one VM size and `family` keeps the families whose name contains a text
+  (without a filter the whole regional catalog is returned, about a hundred thousand characters). Each line
+  ends with the disk-performance capabilities of the size: uncached IOPS and throughput (MiB/s), cached disk
+  size, maximum data disks, Hyper-V generations, Premium IO, NVMe size and disk controller types.
 - **support** — the subscription's support tickets: id, status, severity, service, problem classification,
   creation date and title, newest first. The submitter's contact details are in the API response but are
   deliberately not surfaced by this tool.
@@ -114,13 +116,15 @@ report, not a sortable list).
   protected item count, immutability, soft delete, multi-user authorization and cross-region restore state), their policies (schedule, retention per daily/weekly/monthly/yearly level, instant
   snapshot retention, number of items using the policy) and protected items (name, type, policy, protection
   state, health, last backup result and time, recovery point count). Read-only: no restore operations and no
-  protection changes. Stored data size and per-item cost are not shown (ARM does not report them as a field;
+  protection changes. With `item` it lists the recovery points of one protected item instead (point id for
+  `az backup restore`, time, consistency type, tier `InstantRP` / `HardenedRP`). Stored data size and per-item cost are not shown (ARM does not report them as a field;
   cost is available through `costs`). Optional `name` keeps one vault.
 - **metrics** — Azure Monitor metrics of a resource (VM, disk, MySQL, storage account, ...) over a period: for
   each metric and aggregation a summary (average, maximum, minimum, interval count and, with `threshold`,
   how many intervals are strictly above it — for CPU with `interval=PT1H` that is the number of hours above
   the threshold) and, with `points=true`, the series of points. With `list=true` it lists the metrics the
-  resource offers. The resource is a full `resource` id or a `name` (narrowed by `group` and `type`; several
+  resource offers. Arguments: `timespan` (`30m`, `24h`, `7d` back from now) or an explicit `start` / `end`
+  (ISO 8601 UTC); an unknown argument is an error, not silently ignored. The resource is a full `resource` id or a `name` (narrowed by `group` and `type`; several
   matches are listed instead of guessed). Read-only (`Reader` / `Monitoring Reader`); Azure keeps metrics for
   93 days.
 

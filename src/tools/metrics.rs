@@ -114,6 +114,8 @@ async fn locate(http: &reqwest::Client, arguments: &serde_json::Value) -> Result
     }
 }
 async fn report(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
+    tools::unknown(arguments, &["resource", "name", "type", "list", "metric", "timespan", "start", "end", "interval", "aggregation", "threshold", "points", "group", "sbscrptn"])?;
+
     let id = locate(http, arguments).await?;
 
     if arguments["list"].as_bool().unwrap_or(false) {
@@ -124,12 +126,18 @@ async fn report(http: &reqwest::Client, arguments: &serde_json::Value) -> Result
     }
 
     let names = arguments["metric"].as_str().ok_or("Вкажіть metric (ім'я метрики, кілька через кому) чи list=true для переліку доступних.".to_string())?;
-    let span = arguments["timespan"].as_str().unwrap_or("24h");
-    let back = seconds(span).ok_or(format!("Некоректний timespan {}: очікується число й одиниця m, h чи d, напр. 7d.", span))?;
     let interval = arguments["interval"].as_str().unwrap_or("PT1H");
     let aggregation = arguments["aggregation"].as_str().unwrap_or("Average");
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let (start, end) = (iso(now - back), iso(now));
+    let (start, end) = match arguments["start"].as_str() {
+        Some(start) => (start.to_string(), arguments["end"].as_str().map_or(iso(now), str::to_string)),
+        None => {
+            let span = arguments["timespan"].as_str().unwrap_or("24h");
+            let back = seconds(span).ok_or(format!("Некоректний timespan {}: очікується число й одиниця m, h чи d, напр. 30m, 7d.", span))?;
+
+            (iso(now - back), iso(now))
+        }
+    };
     let path = format!(
         "{}/providers/microsoft.insights/metrics?api-version=2023-10-01&metricnames={}&timespan={}/{}&interval={}&aggregation={}",
         id, names, start, end, interval, aggregation,
