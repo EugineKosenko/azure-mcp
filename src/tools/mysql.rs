@@ -1,0 +1,97 @@
+use crate::client;
+use crate::tools;
+
+fn block(server: &serde_json::Value) -> String {
+    let shown = |pointer: &str| tools::shown(server, pointer);
+
+    [
+        format!(
+            "{}  {}  {}  version={}  state={}",
+            tools::text(server, "/name"),
+            tools::part(tools::text(server, "/id"), "resourceGroups"),
+            tools::text(server, "/location"),
+            shown("/properties/version"),
+            shown("/properties/state"),
+        ),
+        format!("  sku={}  tier={}", shown("/sku/name"), shown("/sku/tier")),
+        format!(
+            "  disk: size={} GB  iops={}  autoGrow={}  autoIoScaling={}  redundancy={}",
+            shown("/properties/storage/storageSizeGB"),
+            shown("/properties/storage/iops"),
+            shown("/properties/storage/autoGrow"),
+            shown("/properties/storage/autoIoScaling"),
+            shown("/properties/storage/storageRedundancy"),
+        ),
+        format!(
+            "  backup: retention={} d  geoRedundant={}  earliestRestore={}",
+            shown("/properties/backup/backupRetentionDays"),
+            shown("/properties/backup/geoRedundantBackup"),
+            shown("/properties/backup/earliestRestoreDate"),
+        ),
+        format!(
+            "  highAvailability: mode={}  state={}  replicationRole={}",
+            shown("/properties/highAvailability/mode"),
+            shown("/properties/highAvailability/state"),
+            shown("/properties/replicationRole"),
+        ),
+    ]
+    .join("\n")
+}
+
+pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde_json::Value {
+    let scope = match tools::scope(arguments).await {
+        Ok(scope) => scope,
+        Err(message) => return tools::reply(Err(message)),
+    };
+    let path = format!("{}/providers/Microsoft.DBforMySQL/flexibleServers?api-version=2024-10-01-preview", scope);
+    let name = arguments["server"].as_str();
+    
+    tools::reply(client::list(http, &path).await.map(|servers| {
+        let blocks: Vec<String> = tools::sorted(&servers)
+            .into_iter()
+            .filter(|server| name.is_none_or(|name| tools::same(tools::text(server, "/name"), name)))
+            .map(block)
+            .collect();
+    
+        if blocks.is_empty() { "Серверів MySQL не знайдено.".to_string() } else { blocks.join("\n\n") }
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_shows_cost_settings() {
+        let server = serde_json::json!({
+            "name": "demo-db",
+            "id": "/subscriptions/s/resourceGroups/demo-rg/providers/Microsoft.DBforMySQL/flexibleServers/demo-db",
+            "location": "East US",
+            "sku": { "name": "Standard_D2ds_v4", "tier": "GeneralPurpose" },
+            "properties": {
+                "version": "8.0.21",
+                "state": "Ready",
+                "replicationRole": "None",
+                "storage": { "storageSizeGB": 128, "iops": 684, "autoGrow": "Enabled", "autoIoScaling": "Disabled", "storageRedundancy": "LocalRedundancy" },
+                "backup": { "backupRetentionDays": 7, "geoRedundantBackup": "Disabled", "earliestRestoreDate": "2026-11-02T00:00:00+00:00" },
+                "highAvailability": { "mode": "Disabled", "state": "NotEnabled" },
+            },
+        });
+    
+        assert_eq!(
+            block(&server),
+            "demo-db  demo-rg  East US  version=8.0.21  state=Ready\n\
+             \x20 sku=Standard_D2ds_v4  tier=GeneralPurpose\n\
+             \x20 disk: size=128 GB  iops=684  autoGrow=Enabled  autoIoScaling=Disabled  redundancy=LocalRedundancy\n\
+             \x20 backup: retention=7 d  geoRedundant=Disabled  earliestRestore=2026-11-02T00:00:00+00:00\n\
+             \x20 highAvailability: mode=Disabled  state=NotEnabled  replicationRole=None"
+        );
+    }
+    
+    #[test]
+    fn block_missing_fields_are_dashes() {
+        let server = serde_json::json!({ "name": "s", "id": "/subscriptions/x/resourceGroups/g/providers/p/s", "properties": {} });
+    
+        assert!(block(&server).starts_with("s  g  -  version=-  state=-\n  sku=-  tier=-\n  disk: size=- GB  iops=-"));
+    }
+}

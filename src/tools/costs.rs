@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use crate::client;
 
 const PERIODS: [&str; 5] = ["MonthToDate", "BillingMonthToDate", "TheLastMonth", "TheLastBillingMonth", "WeekToDate"];
-const SPLITS: [&str; 5] = ["ResourceGroupName", "ResourceId", "ResourceType", "MeterCategory", "ServiceName"];
+const SPLITS: [&str; 7] = ["ResourceGroupName", "ResourceId", "ResourceType", "MeterCategory", "MeterSubcategory", "Meter", "ServiceName"];
 fn date_ok(text: &str) -> bool {
     text.len() == 10 && text.bytes().enumerate().all(|(index, byte)| if index == 4 || index == 7 { byte == b'-' } else { byte.is_ascii_digit() })
 }
-fn request(period: &str, span: Option<(&str, &str)>, split: &str, daily: bool) -> serde_json::Value {
+fn request(period: &str, span: Option<(&str, &str)>, split: &str, daily: bool, resource: Option<&str>) -> serde_json::Value {
     let mut body = serde_json::json!({
         "type": "ActualCost",
         "timeframe": if span.is_some() { "Custom" } else { period },
@@ -22,6 +22,12 @@ fn request(period: &str, span: Option<(&str, &str)>, split: &str, daily: bool) -
         body["timePeriod"] = serde_json::json!({
             "from": format!("{}T00:00:00+00:00", from),
             "to": format!("{}T23:59:59+00:00", to),
+        });
+    }
+
+    if let Some(id) = resource {
+        body["dataset"]["filter"] = serde_json::json!({
+            "dimensions": { "name": "ResourceId", "operator": "In", "values": [id.to_lowercase()] },
         });
     }
 
@@ -169,9 +175,17 @@ pub async fn run(http: &reqwest::Client, arguments: &serde_json::Value) -> serde
         Err(message) => return tools::reply(Err(message)),
     };
     let path = format!("{}/providers/Microsoft.CostManagement/query?api-version=2023-11-01", scope);
+    let resource = if arguments["resource"].is_null() && arguments["name"].is_null() {
+        None
+    } else {
+        match tools::locate(http, arguments).await {
+            Ok(id) => Some(id),
+            Err(message) => return tools::reply(Err(message)),
+        }
+    };
     
     tools::reply(
-        client::query(http, &path, &request(period, span, split, daily), tools::refresh(arguments))
+        client::query(http, &path, &request(period, span, split, daily, resource.as_deref()), tools::refresh(arguments))
             .await
             .map(|(body, age)| {
                 let text = if daily { series(&body, split) } else { format!("{}\n{}", table(&body, split), NOTE) };
@@ -220,17 +234,31 @@ mod tests {
     }
     #[test]
     fn request_shape() {
-        let body = request("TheLastMonth", None, "ServiceName", false);
+        let body = request("TheLastMonth", None, "ServiceName", false, None);
     
         assert_eq!(body["timeframe"], "TheLastMonth");
         assert_eq!(body["dataset"]["granularity"], "None");
         assert_eq!(body["dataset"]["grouping"][0]["name"], "ServiceName");
         assert!(body.get("timePeriod").is_none());
+        assert!(body["dataset"].get("filter").is_none());
+    }
+    
+    #[test]
+    fn request_resource_filter() {
+        let body = request("MonthToDate", None, "Meter", false, Some("/subscriptions/S/resourceGroups/Demo-Rg/providers/Microsoft.DBforMySQL/flexibleServers/Demo-Db"));
+    
+        assert_eq!(body["dataset"]["grouping"][0]["name"], "Meter");
+        assert_eq!(body["dataset"]["filter"]["dimensions"]["name"], "ResourceId");
+        assert_eq!(body["dataset"]["filter"]["dimensions"]["operator"], "In");
+        assert_eq!(
+            body["dataset"]["filter"]["dimensions"]["values"][0],
+            "/subscriptions/s/resourcegroups/demo-rg/providers/microsoft.dbformysql/flexibleservers/demo-db"
+        );
     }
     
     #[test]
     fn request_custom_daily() {
-        let body = request("MonthToDate", Some(("2026-09-01", "2026-09-20")), "MeterCategory", true);
+        let body = request("MonthToDate", Some(("2026-09-01", "2026-09-20")), "MeterCategory", true, None);
     
         assert_eq!(body["timeframe"], "Custom");
         assert_eq!(body["dataset"]["granularity"], "Daily");

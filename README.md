@@ -40,8 +40,9 @@ sorted by group and then by name (or, for `quota`, by kind and name; `pricing` a
 report, not a sortable list).
 
 - **costs** — actual costs (`ActualCost`) of a subscription or one resource group for a period, split by
-  resource group, resource (shown as `group  type  name`), resource type, meter category or service, largest
-  first, with a total. `period` is one of `MonthToDate`, `BillingMonthToDate`, `TheLastMonth`,
+  resource group, resource (shown as `group  type  name`), resource type, meter category, meter subcategory,
+  meter name or service, largest first, with a total. `resource` (a full id) or `name` (narrowed by `group`
+  and `type`) keeps one resource; with `by=Meter` that shows what exactly in it costs money. `period` is one of `MonthToDate`, `BillingMonthToDate`, `TheLastMonth`,
   `TheLastBillingMonth`, `WeekToDate`; or give `from` and `to` (`YYYY-MM-DD`, inclusive). With `daily` it
   prints the cost of every day and the average per complete day of each group. Cost Management lags by about
   half a day, so the last day of the data is always marked incomplete.
@@ -131,6 +132,19 @@ report, not a sortable list).
   (ISO 8601 UTC); an unknown argument is an error, not silently ignored. The resource is a full `resource` id or a `name` (narrowed by `group` and `type`; several
   matches are listed instead of guessed). Read-only (`Reader` / `Monitoring Reader`); Azure keeps metrics for
   93 days.
+- **mysql** — MySQL Flexible Server settings that drive cost: `sku` and tier, disk (size, provisioned IOPS,
+  `autoGrow`, `autoIoScaling`, redundancy), backup (retention days, geo-redundancy, earliest restore point),
+  high availability, replication role, version and state. Optional `server` keeps one server. Network and
+  firewall rules are shown by `firewall`.
+- **logging** — MySQL Flexible Server logging: server parameters related to logs (`slow_query_log`,
+  `long_query_time`, `log_output`, `general_log`, `performance_schema`, `audit_log_*`; user overrides are
+  marked) and the diagnostic settings (destinations — Log Analytics, Storage, Event Hub — and enabled log
+  categories). It does not read the logs themselves. Optional `server` keeps one server. Read-only (`Reader`).
+- **activity** — Azure Activity Log over a period (`start`, optional `end`; `YYYY-MM-DD` or ISO 8601 UTC):
+  time, caller, operation, result and resource, oldest first. The scope is one resource (`resource` or
+  `name` narrowed by `group` and `type`), a resource group (`group`) or the whole subscription. Intermediate
+  states (`Started`, `Accepted`, `In Progress`) are hidden unless `all=true`; `limit` caps the output.
+  Read-only (`Reader`); Azure keeps the log for 90 days.
 
 ## Authentication
 
@@ -205,7 +219,8 @@ be allowed without a prompt: `mcp__azure-mcp__costs`, `mcp__azure-mcp__pubips`, 
 `mcp__azure-mcp__disks`, `mcp__azure-mcp__snapshots`, `mcp__azure-mcp__vnets`, `mcp__azure-mcp__resources`,
 `mcp__azure-mcp__pricing`, `mcp__azure-mcp__advisor`, `mcp__azure-mcp__account`, `mcp__azure-mcp__quota`,
 `mcp__azure-mcp__skus`, `mcp__azure-mcp__support`, `mcp__azure-mcp__storage`, `mcp__azure-mcp__images` and
-`mcp__azure-mcp__galleries` and `mcp__azure-mcp__backup` and `mcp__azure-mcp__metrics` in `permissions.allow`.
+`mcp__azure-mcp__galleries` and `mcp__azure-mcp__backup` and `mcp__azure-mcp__metrics` and
+`mcp__azure-mcp__mysql`, `mcp__azure-mcp__logging` and `mcp__azure-mcp__activity` in `permissions.allow`.
 
 ## License
 

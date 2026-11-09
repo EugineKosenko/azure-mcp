@@ -92,31 +92,10 @@ fn definition(item: &serde_json::Value) -> String {
         if supported.is_empty() { "-".to_string() } else { supported.join(",") },
     )
 }
-async fn locate(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
-    if let Some(id) = arguments["resource"].as_str() {
-        return Ok(id.to_string());
-    }
-
-    let name = arguments["name"].as_str().ok_or("Вкажіть resource (повний ідентифікатор) чи name (ім'я ресурсу).".to_string())?;
-    let scope = tools::scope(arguments).await?;
-    let kind = arguments["type"].as_str().map_or(String::new(), |kind| format!(" and resourceType eq '{}'", kind));
-    let path = format!("{}/resources?$filter=name eq '{}'{}&api-version=2021-04-01", scope, name.replace('\'', "''"), kind);
-    let found = client::list(http, &path).await?;
-
-    match found.as_slice() {
-        [one] => Ok(tools::text(one, "/id").to_string()),
-        [] => Err(format!("Ресурс {} не знайдено в цій області.", name)),
-        many => Err(format!(
-            "Ресурсів з ім'ям {} кілька, вкажіть resource (повний ідентифікатор), group чи type:\n{}",
-            name,
-            tools::sorted(many).iter().map(|one| format!("{}  {}  {}", tools::part(tools::text(one, "/id"), "resourceGroups").to_lowercase(), tools::text(one, "/type"), tools::text(one, "/name"))).collect::<Vec<_>>().join("\n"),
-        )),
-    }
-}
 async fn report(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
     tools::unknown(arguments, &["resource", "name", "type", "list", "metric", "timespan", "start", "end", "interval", "aggregation", "threshold", "points", "group", "sbscrptn"])?;
 
-    let id = locate(http, arguments).await?;
+    let id = tools::locate(http, arguments).await?;
 
     if arguments["list"].as_bool().unwrap_or(false) {
         let path = format!("{}/providers/microsoft.insights/metricDefinitions?api-version=2018-01-01", id);

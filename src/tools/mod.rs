@@ -21,12 +21,15 @@ mod images;
 mod galleries;
 mod backup;
 mod metrics;
+mod mysql;
+mod activity;
+mod logging;
 
 pub fn list() -> serde_json::Value {
     serde_json::json!([
         {
             "name": "costs",
-            "description": "Фактичні витрати (ActualCost) підписки Azure чи однієї групи ресурсів за період, з розбивкою за групами ресурсів, ресурсами (група, тип, ім'я), типами ресурсів, категоріями лічильників або службами; від більших до менших, з підсумком. Із daily=true — витрати за кожну добу й середня за повну добу. Остання доба в даних завжди неповна (Cost Management відстає приблизно на півдоби). Дані Cost Management мають спільний ліміт запитів: при 429 сервер повторює запит із паузами, відповідь кешується на годину (у відповіді вказано, коли вона з кешу).",
+            "description": "Фактичні витрати (ActualCost) підписки Azure чи однієї групи ресурсів за період, з розбивкою за групами ресурсів, ресурсами (група, тип, ім'я), типами ресурсів, категоріями лічильників або службами, лічильниками (Meter) чи підкатегоріями лічильників (MeterSubcategory); за resource чи name — лише один ресурс; від більших до менших, з підсумком. Із daily=true — витрати за кожну добу й середня за повну добу. Остання доба в даних завжди неповна (Cost Management відстає приблизно на півдоби). Дані Cost Management мають спільний ліміт запитів: при 429 сервер повторює запит із паузами, відповідь кешується на годину (у відповіді вказано, коли вона з кешу).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -36,7 +39,10 @@ pub fn list() -> serde_json::Value {
                     "from": { "type": "string", "description": "Початок довільного періоду, РРРР-ММ-ДД (разом із to; перекриває period)" },
                     "to": { "type": "string", "description": "Кінець довільного періоду включно, РРРР-ММ-ДД (разом із from)" },
                     "daily": { "type": "boolean", "description": "Витрати за кожну добу й середня за повну добу для кожної групи" },
-                    "by": { "type": "string", "enum": ["ResourceGroupName", "ResourceId", "ResourceType", "MeterCategory", "ServiceName"], "description": "Розбивка, за замовчуванням ResourceGroupName; ResourceId показано як «група  тип  ім'я»" },
+                    "by": { "type": "string", "enum": ["ResourceGroupName", "ResourceId", "ResourceType", "MeterCategory", "MeterSubcategory", "Meter", "ServiceName"], "description": "Розбивка, за замовчуванням ResourceGroupName; ResourceId показано як «група  тип  ім'я»; Meter і MeterSubcategory показують, що саме в ресурсі коштує (обчислення, диск, IOPS, резервні копії)" },
+                    "resource": { "type": "string", "description": "Лише цей ресурс: повний ідентифікатор (/subscriptions/.../providers/...)" },
+                    "name": { "type": "string", "description": "Лише цей ресурс за іменем, якщо resource не задано (з group і type; якщо імен кілька, повертається їх перелік)" },
+                    "type": { "type": "string", "description": "Повний тип ресурсу для пошуку за name, напр. Microsoft.DBforMySQL/flexibleServers" },
                     "refresh": { "type": "boolean", "description": "Пропустити кеш і запитати Azure наново" }
                 },
                 "additionalProperties": false
@@ -328,6 +334,52 @@ pub fn list() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "mysql",
+            "description": "Налаштування серверів MySQL Flexible Server, що впливають на вартість: розмір (sku, tier), диск (розмір, куплені IOPS, autoGrow, autoIoScaling, redundancy), резервні копії (строк зберігання, георезервування, найраніша точка відновлення), висока доступність, роль реплікації, версія й стан. Необов'язковий server лишає один сервер. Лише читання (Reader). Мережу й правила firewall показує firewall.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "description": "Лише сервер з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "activity",
+            "description": "Журнал активності Azure (Activity Log) за період: час, хто (caller), що (операція), результат і ресурс; від найстаріших до найновіших. Область: один ресурс (resource чи name), група ресурсів (group) або вся підписка. За замовчуванням проміжні стани операцій (Started, Accepted, In Progress) пропущено — лишаються Succeeded і Failed; all=true показує все. Журнал зберігається 90 діб. Лише читання (Reader).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": { "type": "string", "description": "Початок періоду: РРРР-ММ-ДД (початок доби) або ISO 8601 UTC, напр. 2026-10-31T00:00:00Z" },
+                    "end": { "type": "string", "description": "Кінець періоду: РРРР-ММ-ДД (кінець доби включно) або ISO 8601 UTC; без нього — до зараз" },
+                    "resource": { "type": "string", "description": "Повний ідентифікатор ресурсу (/subscriptions/.../providers/...)" },
+                    "name": { "type": "string", "description": "Ім'я ресурсу, якщо resource не задано (з group і type; якщо імен кілька, повертається їх перелік)" },
+                    "type": { "type": "string", "description": "Повний тип ресурсу для пошуку за name, напр. Microsoft.DBforMySQL/flexibleServers" },
+                    "group": { "type": "string", "description": "Група ресурсів: область журналу, коли ресурс не задано; для пошуку за name — звуження" },
+                    "all": { "type": "boolean", "description": "Показати й проміжні стани операцій (Started, Accepted, In Progress)" },
+                    "limit": { "type": "integer", "description": "Скільки подій показати, за замовчуванням 200" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "required": ["start"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "logging",
+            "description": "Журнали серверів MySQL Flexible Server: параметри сервера, пов'язані з журналами (slow_query_log, long_query_time, log_output, general_log, performance_schema, audit_log_* тощо; змінені користувачем позначено *) і діагностичні налаштування (Diagnostic settings): куди збираються журнали (Log Analytics, Storage, Event Hub) і які категорії ввімкнено. Без діагностичних налаштувань журнали ніде не збираються. Самих журналів не читає. Необов'язковий server лишає один сервер. Лише читання (Reader).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "description": "Лише сервер з цим іменем" },
+                    "group": { "type": "string", "description": "Група ресурсів; без неї — уся підписка" },
+                    "sbscrptn": { "type": "string", "description": "Ідентифікатор підписки; без нього — AZURE_SBSCRPTN чи підписка за замовчуванням az" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -356,6 +408,9 @@ pub async fn call(http: &reqwest::Client, name: &str, arguments: &serde_json::Va
         "galleries" => galleries::run(http, arguments).await,
         "backup" => backup::run(http, arguments).await,
         "metrics" => metrics::run(http, arguments).await,
+        "mysql" => mysql::run(http, arguments).await,
+        "activity" => activity::run(http, arguments).await,
+        "logging" => logging::run(http, arguments).await,
         _ => reply(Err(format!("Невідомий інструмент: {}", name)))
     }
 }
@@ -402,6 +457,27 @@ pub fn shown(value: &serde_json::Value, pointer: &str) -> String {
 
 pub fn same(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
+}
+pub async fn locate(http: &reqwest::Client, arguments: &serde_json::Value) -> Result<String, String> {
+    if let Some(id) = arguments["resource"].as_str() {
+        return Ok(id.to_string());
+    }
+
+    let name = arguments["name"].as_str().ok_or("Вкажіть resource (повний ідентифікатор) чи name (ім'я ресурсу).".to_string())?;
+    let scope = scope(arguments).await?;
+    let kind = arguments["type"].as_str().map_or(String::new(), |kind| format!(" and resourceType eq '{}'", kind));
+    let path = format!("{}/resources?$filter=name eq '{}'{}&api-version=2021-04-01", scope, name.replace('\'', "''"), kind);
+    let found = client::list(http, &path).await?;
+
+    match found.as_slice() {
+        [one] => Ok(text(one, "/id").to_string()),
+        [] => Err(format!("Ресурс {} не знайдено в цій області.", name)),
+        many => Err(format!(
+            "Ресурсів з ім'ям {} кілька, вкажіть resource (повний ідентифікатор), group чи type:\n{}",
+            name,
+            sorted(many).iter().map(|one| format!("{}  {}  {}", part(text(one, "/id"), "resourceGroups").to_lowercase(), text(one, "/type"), text(one, "/name"))).collect::<Vec<_>>().join("\n"),
+        )),
+    }
 }
 pub fn unknown(arguments: &serde_json::Value, known: &[&str]) -> Result<(), String> {
     let extra: Vec<&str> = arguments.as_object().into_iter().flat_map(|map| map.keys()).map(String::as_str).filter(|key| !known.contains(key)).collect();
